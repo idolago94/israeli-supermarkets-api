@@ -1,4 +1,8 @@
 import { gunzipSync } from 'zlib';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { Agent } from 'undici';
+import { rootCertificates } from 'tls';
 
 // ─── Cerberus portal client ───────────────────────────────────────────────────
 //
@@ -8,6 +12,23 @@ import { gunzipSync } from 'zlib';
 // Function. Node 20 (Vercel runtime) ships a global fetch.
 
 export const CERBERUS_BASE = 'https://url.publishedprices.co.il';
+
+// The portal's TLS handshake omits its Sectigo intermediate certificate.
+// Browsers paper over this via cached/AIA-fetched intermediates; Node's
+// strict verifier doesn't, so plain fetch() fails with "unable to verify
+// the first certificate". Supplying the intermediate alongside Node's
+// normal root store fixes verification without weakening it.
+const missingIntermediate = readFileSync(
+  join(__dirname, 'certs/sectigo-public-server-auth-ca-dv-r36.pem'),
+  'utf8',
+);
+const cerberusDispatcher = new Agent({
+  connect: { ca: [...rootCertificates, missingIntermediate] },
+});
+
+async function cerberusFetch(url: string, init: Record<string, unknown> = {}): Promise<Response> {
+  return fetch(url, { ...init, dispatcher: cerberusDispatcher } as any);
+}
 
 export interface ChainConfig {
   /** Key used in products.prices — keep stable, it's referenced by the app. */
@@ -38,11 +59,11 @@ function extractCsrf(html: string): string {
 }
 
 export async function cerberusLogin(username: string): Promise<string> {
-  const page = await fetch(`${CERBERUS_BASE}/login`);
+  const page = await cerberusFetch(`${CERBERUS_BASE}/login`);
   const cookie = cookiesFrom(page);
   const csrf = extractCsrf(await page.text());
 
-  const res = await fetch(`${CERBERUS_BASE}/login/user`, {
+  const res = await cerberusFetch(`${CERBERUS_BASE}/login/user`, {
     method: 'POST',
     redirect: 'manual',
     headers: {
@@ -62,10 +83,10 @@ export async function cerberusLogin(username: string): Promise<string> {
 
 /** Lists files whose name contains `search` (case-insensitive substring match server-side). */
 export async function cerberusListFiles(cookie: string, search: string): Promise<string[]> {
-  const filePage = await fetch(`${CERBERUS_BASE}/file`, { headers: { cookie } });
+  const filePage = await cerberusFetch(`${CERBERUS_BASE}/file`, { headers: { cookie } });
   const csrf = extractCsrf(await filePage.text());
 
-  const res = await fetch(`${CERBERUS_BASE}/file/json/dir`, {
+  const res = await cerberusFetch(`${CERBERUS_BASE}/file/json/dir`, {
     method: 'POST',
     headers: {
       'content-type': 'application/x-www-form-urlencoded',
@@ -119,7 +140,7 @@ export async function headFileMeta(
   fname: string,
 ): Promise<{ size: string; modified: string } | null> {
   try {
-    const res = await fetch(downloadUrl(fname), { method: 'HEAD', headers: { cookie } });
+    const res = await cerberusFetch(downloadUrl(fname), { method: 'HEAD', headers: { cookie } });
     if (!res.ok) return null;
     return {
       size: res.headers.get('content-length') ?? '',
@@ -131,7 +152,7 @@ export async function headFileMeta(
 }
 
 export async function downloadFile(cookie: string, fname: string): Promise<string> {
-  const res = await fetch(downloadUrl(fname), { headers: { cookie } });
+  const res = await cerberusFetch(downloadUrl(fname), { headers: { cookie } });
   if (!res.ok) throw new Error(`download failed (${res.status}) for ${fname}`);
   const buf = Buffer.from(await res.arrayBuffer());
   const xmlBuf = fname.toLowerCase().endsWith('.gz') ? gunzipSync(buf) : buf;

@@ -30,11 +30,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       try {
         summary[chain.id] = await syncChainFull(chain);
       } catch (err) {
-        summary[chain.id] = `error: ${err}`;
+        summary[chain.id] = `error: ${err}${(err as any)?.cause ? ` (cause: ${(err as any).cause})` : ''}`;
       }
     }
     res.json({ ok: true, summary });
   } catch (err) {
-    res.status(500).json({ error: `${err}` });
+    res.status(500).json({ error: `${err}${(err as any)?.cause ? ` (cause: ${(err as any).cause})` : ''}` });
   }
 }
