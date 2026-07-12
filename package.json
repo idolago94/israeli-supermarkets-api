@@ -1,0 +1,19 @@
+{
+  "name": "catalog-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Price-comparison catalog API — MongoDB-backed catalog + Cerberus price-sync, deployed on Vercel.",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "dev": "vercel dev"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "mongodb": "^6.10.0"
+  },
+  "devDependencies": {
+    "@vercel/node": "^3.2.0",
+    "typescript": "^5.5.0",
+    "@types/node": "^20.0.0"
+  }
+}
