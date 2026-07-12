@@ -37,6 +37,24 @@ export function normalizeBarcode(raw: string): string {
   return digits.length >= 7 ? digits : '';
 }
 
+/**
+ * Split a free-text search term into keyword tokens to match against the
+ * `keywords` array stored per product. Uses the same word extraction as
+ * `generateKeywords`, and truncates each word to 12 chars — the max prefix
+ * length stored — so a full-word query still matches a stored prefix token.
+ * The caller requires ALL returned tokens to be present ($all), which makes
+ * multi-word queries order-independent and tolerant of extra words in the name
+ * (e.g. "חלב דל לקטוז" matches "חלב טרי דל לקטוז").
+ */
+export function searchTokens(term: string): string[] {
+  const words = term
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}%]+/u)
+    .filter((w) => w.length >= 2)
+    .map((w) => w.slice(0, 12));
+  return [...new Set(words)];
+}
+
 /** Word-prefix tokens powering the client's autocomplete keyword query. */
 export function generateKeywords(name: string): string[] {
   const words = name

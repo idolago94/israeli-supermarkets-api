@@ -1,44 +1,42 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { requireApiKey } from '../../lib/auth';
-import { products, ProductDoc } from '../../lib/mongo';
+import { products } from '../../lib/mongo';
+import { searchTokens } from '../../lib/parse';
 import { toApiProduct, qp } from '../../lib/serialize';
 
 // GET /api/products/search?q=<term>&max=<n>
 //
-// Mirrors the old client-side search: combine a prefix match on nameLower with
-// a word-prefix match on the keywords array, dedupe, and rank exact
-// name-prefix hits first.
+// Splits the term into word tokens and requires ALL of them to appear in the
+// product's `keywords` array ($all). Because keywords hold word *prefixes*, this
+// matches partial words, ignores word order, and tolerates extra words in the
+// name — so "חלב דל לקטוז" finds "חלב טרי דל לקטוז" (which the old nameLower
+// prefix match missed). Results are ranked with exact name-prefix hits first.
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!requireApiKey(req, res)) return;
 
-  const term = qp(req.query.q).trim().toLowerCase();
+  const term = qp(req.query.q).trim();
   const max = Math.min(Math.max(parseInt(qp(req.query.max) || '8', 10) || 8, 1), 25);
-  if (term.length < 2) {
+  const tokens = searchTokens(term);
+  if (!tokens.length) {
     res.json({ products: [] });
     return;
   }
 
   try {
     const col = await products();
-    const [prefix, keyword] = await Promise.all([
-      col
-        // Range scan on the nameLower index: all names starting with `term`.
-        .find({ nameLower: { $gte: term, $lt: term + '￿' } })
-        .limit(max)
-        .toArray(),
-      col.find({ keywords: term }).limit(max).toArray(),
-    ]);
+    // Fetch a few extra candidates so the "starts-with" ranking below can
+    // surface the best matches even when more than `max` products match.
+    const docs = await col
+      .find({ keywords: { $all: tokens } })
+      .limit(Math.min(max * 4, 40))
+      .toArray();
 
-    const byId = new Map<string, ProductDoc>();
-    for (const d of [...prefix, ...keyword]) {
-      if (!byId.has(d._id)) byId.set(d._id, d);
-    }
-
-    const results = [...byId.values()]
+    const lower = term.toLowerCase();
+    const results = docs
       .map(toApiProduct)
       .sort((a, b) => {
-        const aStarts = a.name.toLowerCase().startsWith(term) ? 0 : 1;
-        const bStarts = b.name.toLowerCase().startsWith(term) ? 0 : 1;
+        const aStarts = a.name.toLowerCase().startsWith(lower) ? 0 : 1;
+        const bStarts = b.name.toLowerCase().startsWith(lower) ? 0 : 1;
         return aStarts - bStarts || a.name.localeCompare(b.name, 'he');
       })
       .slice(0, max);
