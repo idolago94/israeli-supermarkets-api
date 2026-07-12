@@ -4,8 +4,8 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 //
 // Two independent secrets:
 //   • CATALOG_API_KEY — sent by the mobile app on every read, in `x-api-key`.
-//   • SYNC_SECRET     — required to trigger a catalog sync (write path).
-//   • CRON_SECRET     — Vercel Cron's bearer token on scheduled invocations.
+//   • SYNC_SECRET     — required to trigger a catalog sync (write path). The
+//     scheduled Firebase functions send it in `x-sync-secret`.
 
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -33,23 +33,6 @@ export function requireSyncSecret(req: VercelRequest, res: VercelResponse): bool
     (req.query.secret as string) ||
     '';
   if (!expected || !provided || !timingSafeEqual(provided, expected)) {
-    res.status(401).json({ error: 'unauthorized' });
-    return false;
-  }
-  return true;
-}
-
-/**
- * Guards the /api/cron/* endpoints. Vercel Cron sends
- * `Authorization: Bearer <CRON_SECRET>`. When CRON_SECRET is unset we allow the
- * call (Vercel only invokes cron paths internally), but setting it is strongly
- * recommended so the endpoint can't be triggered publicly.
- */
-export function requireCron(req: VercelRequest, res: VercelResponse): boolean {
-  const expected = process.env.CRON_SECRET;
-  if (!expected) return true;
-  const provided = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-  if (!timingSafeEqual(provided, expected)) {
     res.status(401).json({ error: 'unauthorized' });
     return false;
   }

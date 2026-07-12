@@ -2,11 +2,6 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
     "api/sync/full.ts": { "maxDuration": 300, "memory": 1024 },
-    "api/sync/deltas.ts": { "maxDuration": 300, "memory": 1024 },
-    "api/cron/sync.ts": { "maxDuration": 300, "memory": 1024 }
-  },
-  "crons": [
-    { "path": "/api/cron/sync?mode=full", "schedule": "0 1 * * *" },
-    { "path": "/api/cron/sync?mode=deltas", "schedule": "0 5,9,13,17 * * *" }
-  ]
+    "api/sync/deltas.ts": { "maxDuration": 300, "memory": 1024 }
+  }
 }

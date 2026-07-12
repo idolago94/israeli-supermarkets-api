@@ -16,16 +16,18 @@ the catalog through this API instead of talking to the database directly.
 ## Architecture
 
 ```
-Vercel Cron ──► /api/cron/sync?mode=full|deltas
-                     │  (scrape Cerberus → parse XML → upsert)
-                     ▼
-                MongoDB Atlas  (products, syncState)
-                     ▲
-   Expo app ──► /api/products/*  (x-api-key)
+Firebase (scheduled) ──► POST /api/sync/{full|deltas}   (x-sync-secret)
+                              │  (scrape Cerberus → parse XML → upsert)
+                              ▼
+                         MongoDB Atlas  (products, syncState)
+                              ▲
+        Expo app ──► GET /api/products/*  (x-api-key)
 ```
 
-The Firebase Cloud Function no longer runs the sync; it only handles push
-notifications now.
+This service is intentionally **just two things**: the sync worker (scrape →
+parse → MongoDB) and the read API. It has **no scheduler of its own** — the
+scheduled **Firebase functions** (`functions/src/catalogSync.ts`) call the
+`/api/sync/*` endpoints on a cron. Push notifications also stay in Firebase.
 
 ## Endpoints
 
@@ -34,9 +36,8 @@ notifications now.
 | `GET /api/products?chain=&limit=&cursor=` | `x-api-key` | Paginated catalog (keyset). `chain` filters + sorts cheapest-first. |
 | `GET /api/products/search?q=&max=` | `x-api-key` | Prefix + keyword search. |
 | `GET /api/products/:barcode` | `x-api-key` | Single product. |
-| `GET/POST /api/sync/full?chain=` | `x-sync-secret` | Full PriceFull sync (one chain, or all). |
-| `GET/POST /api/sync/deltas?chain=` | `x-sync-secret` | Intraday delta sync. |
-| `GET /api/cron/sync?mode=full\|deltas` | `CRON_SECRET` (Bearer) | Vercel Cron target; runs all chains. |
+| `GET/POST /api/sync/full?chain=` | `x-sync-secret` | Full PriceFull sync (one chain, or all). Triggered by Firebase. |
+| `GET/POST /api/sync/deltas?chain=` | `x-sync-secret` | Intraday delta sync. Triggered by Firebase. |
 
 ## Environment variables
 
@@ -44,8 +45,8 @@ See `.env.example`. Set these in the Vercel project settings:
 
 - `MONGODB_URI`, `MONGODB_DB`
 - `CATALOG_API_KEY` — the app sends it in `x-api-key`.
-- `SYNC_SECRET` — required to trigger `/api/sync/*`.
-- `CRON_SECRET` — Vercel Cron sends it as `Authorization: Bearer …`.
+- `SYNC_SECRET` — required to trigger `/api/sync/*`. The Firebase scheduler must
+  use the same value (as `CATALOG_SYNC_SECRET`).
 
 ## Deploy
 
@@ -69,16 +70,20 @@ curl -H "x-sync-secret: $SYNC_SECRET" \
 # …repeat per chain, or hit /api/sync/full with no chain for all of them.
 ```
 
+## Scheduling
+
+There is no cron in this service. The nightly full sync and the intraday delta
+syncs are driven by the Firebase functions `syncCatalogFull` / `syncCatalogDeltas`
+(`functions/src/catalogSync.ts`), which POST to `/api/sync/{mode}` with the
+`x-sync-secret` header. This avoids Vercel Hobby's cron limits and keeps the
+schedule alongside the app's other Cloud Functions. See
+[`docs/CATALOG_SETUP.md`](../docs/CATALOG_SETUP.md) for the full wiring.
+
 ## Notes & limits
 
-- **Cron schedule is UTC.** `0 1 * * *` ≈ 03:00–04:00 Asia/Jerusalem depending
-  on DST. Adjust in `vercel.json` if you need an exact local time.
-- **Vercel Hobby caps cron jobs** (limited count, once-per-day granularity). The
-  4×/day delta cron and per-hour schedules require the **Pro** plan; on Hobby,
-  either keep only the nightly full sync or trigger `/api/sync/*` from an
-  external scheduler (GitHub Actions, cron-job.org) with the `SYNC_SECRET`.
-- `/api/cron/sync` runs all chains sequentially within one 300s invocation. If a
-  chain's file grows large enough to risk that ceiling, switch to per-chain
-  crons hitting `/api/sync/{mode}?chain=<id>`.
+- A call to `/api/sync/{mode}` with no `chain` runs all chains sequentially
+  within one invocation (`maxDuration` 300s). If a chain's file grows large
+  enough to risk that ceiling, have the scheduler call per-chain instead
+  (`/api/sync/{mode}?chain=<id>`).
 - MongoDB client connections are cached across warm invocations (`lib/mongo.ts`)
   to stay within the Atlas M0 connection limit.
