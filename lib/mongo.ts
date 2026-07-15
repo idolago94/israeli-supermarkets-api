@@ -46,7 +46,25 @@ async function connect(): Promise<MongoClient> {
 export interface ChainPrice {
   chainName: string;
   price: number;
+  /** Source UnitOfMeasurePrice — price per unit of measure (₪/ליטר). */
+  unitOfMeasurePrice?: number;
+  /** Source AllowDiscount — whether the chain allows discounts on this item. */
+  allowDiscount?: boolean;
   updatedAt: Date;
+}
+
+/** Physical measurement attributes, intrinsic to the product (barcode). */
+export interface ProductMeasure {
+  /** Source UnitQty — the unit the item is priced by. */
+  unitQty?: string;
+  /** Source Quantity — the numeric size. */
+  quantity?: number;
+  /** Source UnitOfMeasure — unit of `quantity`. */
+  unitOfMeasure?: string;
+  /** Source QtyInPackage — units per package. */
+  qtyInPackage?: string;
+  /** Source bIsWeighted — true when sold by weight. */
+  isWeighted?: boolean;
 }
 
 export interface ProductDoc {
@@ -55,7 +73,9 @@ export interface ProductDoc {
   name: string;
   nameLower: string;
   brand?: string;
+  /** Human-readable size label ("1.32 ליטר"), derived at parse time. */
   unitQty?: string;
+  measure?: ProductMeasure;
   keywords?: string[];
   prices: Record<string, ChainPrice>;
   updatedAt: Date;

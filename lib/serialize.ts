@@ -8,10 +8,19 @@ export interface ApiProduct {
   name: string;
   brand?: string;
   unitQty?: string;
+  measure?: {
+    unitQty?: string;
+    quantity?: number;
+    unitOfMeasure?: string;
+    qtyInPackage?: string;
+    isWeighted?: boolean;
+  };
   prices: {
     chainId: string;
     chainName: string;
     price: number;
+    unitOfMeasurePrice?: number;
+    allowDiscount?: boolean;
     updatedAt: string;
   }[];
 }
@@ -22,6 +31,8 @@ export function toApiProduct(doc: ProductDoc): ApiProduct {
       chainId,
       chainName: p.chainName ?? chainId,
       price: typeof p.price === 'number' ? p.price : parseFloat(String(p.price)),
+      ...(typeof p.unitOfMeasurePrice === 'number' ? { unitOfMeasurePrice: p.unitOfMeasurePrice } : {}),
+      ...(typeof p.allowDiscount === 'boolean' ? { allowDiscount: p.allowDiscount } : {}),
       updatedAt:
         p.updatedAt instanceof Date
           ? p.updatedAt.toISOString()
@@ -35,6 +46,7 @@ export function toApiProduct(doc: ProductDoc): ApiProduct {
     name: doc.name ?? '',
     ...(doc.brand ? { brand: doc.brand } : {}),
     ...(doc.unitQty ? { unitQty: doc.unitQty } : {}),
+    ...(doc.measure && Object.keys(doc.measure).length ? { measure: doc.measure } : {}),
     prices,
   };
 }

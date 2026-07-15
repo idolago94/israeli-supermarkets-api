@@ -67,12 +67,25 @@ async function writeChainPrices(chain: ChainConfig, items: ParsedItem[]): Promis
       [`prices.${chain.id}`]: {
         chainName: chain.nameHe,
         price: item.price,
+        ...(item.unitOfMeasurePrice != null ? { unitOfMeasurePrice: item.unitOfMeasurePrice } : {}),
+        ...(item.allowDiscount != null ? { allowDiscount: item.allowDiscount } : {}),
         updatedAt: now,
       },
       updatedAt: now,
     };
     if (item.brand) set.brand = item.brand;
     if (item.unitQty) set.unitQty = item.unitQty;
+
+    // Product-level measurement attributes. Written as one object so each chain
+    // overwrites it wholesale (values are intrinsic to the barcode, so they
+    // agree across chains — same merge behavior as brand/unitQty above).
+    const measure: Record<string, unknown> = {};
+    if (item.measureUnitQty) measure.unitQty = item.measureUnitQty;
+    if (item.quantity != null) measure.quantity = item.quantity;
+    if (item.unitOfMeasure) measure.unitOfMeasure = item.unitOfMeasure;
+    if (item.qtyInPackage) measure.qtyInPackage = item.qtyInPackage;
+    if (item.isWeighted != null) measure.isWeighted = item.isWeighted;
+    if (Object.keys(measure).length) set.measure = measure;
 
     return {
       updateOne: {

@@ -10,7 +10,46 @@ export interface ParsedItem {
   name: string;
   price: number;
   brand?: string;
+  /** Human-readable size label, derived from Quantity + UnitOfMeasure ("1.32 ליטר"). */
   unitQty?: string;
+  // ─── Raw measurement fields (product-level; intrinsic to the barcode) ────────
+  /** Source UnitQty — the unit the item is priced by ("ליטר", "ק"ג"). */
+  measureUnitQty?: string;
+  /** Source Quantity — the numeric size (1.32). */
+  quantity?: number;
+  /** Source UnitOfMeasure — unit of `quantity`. */
+  unitOfMeasure?: string;
+  /** Source QtyInPackage — units per package. */
+  qtyInPackage?: string;
+  /** Source bIsWeighted — true when sold by weight (deli/produce). */
+  isWeighted?: boolean;
+  // ─── Per-chain price fields (vary by chain) ──────────────────────────────────
+  /** Source UnitOfMeasurePrice — price per unit of measure (₪/ליטר). */
+  unitOfMeasurePrice?: number;
+  /** Source AllowDiscount — whether the chain allows discounts on this item. */
+  allowDiscount?: boolean;
+}
+
+const UNKNOWN = 'לא ידוע';
+
+/** Trimmed text, or '' when empty or the standard "unknown" placeholder. */
+function cleanText(value: string): string {
+  const t = value.trim();
+  return t && t !== UNKNOWN ? t : '';
+}
+
+/** '1' → true, '0' → false, anything else → undefined. */
+function parseBool(value: string): boolean | undefined {
+  const t = value.trim();
+  if (t === '1') return true;
+  if (t === '0') return false;
+  return undefined;
+}
+
+/** Parsed positive number, or undefined when missing/non-positive. */
+function parsePositive(value: string): number | undefined {
+  const n = parseFloat(value);
+  return isFinite(n) && n > 0 ? n : undefined;
 }
 
 function decodeEntities(value: string): string {
@@ -85,15 +124,30 @@ export function parsePriceItemsXml(xml: string, maxItems: number): ParsedItem[] 
     const price = parseFloat(tagValue(block, 'ItemPrice'));
     if (!code || !name || !isFinite(price) || price <= 0) continue;
 
-    const brand = tagValue(block, 'ManufacturerName');
-    const qty = tagValue(block, 'Quantity');
-    const unit = tagValue(block, 'UnitOfMeasure');
+    // NB: the source tag is <ManufactureName> (no "r") — the previous
+    // <ManufacturerName> lookup never matched, so brand was always empty.
+    const brand = cleanText(tagValue(block, 'ManufactureName'));
+    const qtyRaw = tagValue(block, 'Quantity');
+    const measureUnitQty = cleanText(tagValue(block, 'UnitQty'));
+    const quantity = parsePositive(qtyRaw);
+    const unitOfMeasure = cleanText(tagValue(block, 'UnitOfMeasure'));
+    const qtyInPackage = cleanText(tagValue(block, 'QtyInPackage'));
+    const isWeighted = parseBool(tagValue(block, 'bIsWeighted'));
+    const unitOfMeasurePrice = parsePositive(tagValue(block, 'UnitOfMeasurePrice'));
+    const allowDiscount = parseBool(tagValue(block, 'AllowDiscount'));
     items.push({
       code,
       name,
       price,
-      ...(brand && brand !== 'לא ידוע' ? { brand } : {}),
-      ...(qty && unit ? { unitQty: `${trimTrailingZeros(qty)} ${unit}` } : {}),
+      ...(brand ? { brand } : {}),
+      ...(qtyRaw && unitOfMeasure ? { unitQty: `${trimTrailingZeros(qtyRaw)} ${unitOfMeasure}` } : {}),
+      ...(measureUnitQty ? { measureUnitQty } : {}),
+      ...(quantity != null ? { quantity } : {}),
+      ...(unitOfMeasure ? { unitOfMeasure } : {}),
+      ...(qtyInPackage ? { qtyInPackage } : {}),
+      ...(isWeighted != null ? { isWeighted } : {}),
+      ...(unitOfMeasurePrice != null ? { unitOfMeasurePrice } : {}),
+      ...(allowDiscount != null ? { allowDiscount } : {}),
     });
   }
   return items;
