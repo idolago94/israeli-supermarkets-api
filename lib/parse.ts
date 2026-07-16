@@ -124,9 +124,12 @@ export function parsePriceItemsXml(xml: string, maxItems: number): ParsedItem[] 
     const price = parseFloat(tagValue(block, 'ItemPrice'));
     if (!code || !name || !isFinite(price) || price <= 0) continue;
 
-    // NB: the source tag is <ManufactureName> (no "r") — the previous
-    // <ManufacturerName> lookup never matched, so brand was always empty.
-    const brand = cleanText(tagValue(block, 'ManufactureName'));
+    // Most chains emit <ManufactureName> (no "r"); the previous code only
+    // looked up <ManufacturerName>, so brand was empty for them. Check both
+    // spellings so neither variant regresses.
+    const brand = cleanText(
+      tagValue(block, 'ManufactureName') || tagValue(block, 'ManufacturerName'),
+    );
     const qtyRaw = tagValue(block, 'Quantity');
     const measureUnitQty = cleanText(tagValue(block, 'UnitQty'));
     const quantity = parsePositive(qtyRaw);
