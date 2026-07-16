@@ -8,7 +8,7 @@ export interface ApiProduct {
   name: string;
   brand?: string;
   unitQty?: string;
-  department?: string;
+  departments?: string[];
   measure?: {
     unitQty?: string;
     quantity?: number;
@@ -42,15 +42,29 @@ export function toApiProduct(doc: ProductDoc): ApiProduct {
     .filter((p) => isFinite(p.price) && p.price > 0)
     .sort((a, b) => a.price - b.price);
 
+  const departments = productDepartments(doc);
+
   return {
     id: doc._id,
     name: doc.name ?? '',
     ...(doc.brand ? { brand: doc.brand } : {}),
     ...(doc.unitQty ? { unitQty: doc.unitQty } : {}),
-    ...(doc.department ? { department: doc.department } : {}),
+    ...(departments.length ? { departments } : {}),
     ...(doc.measure && Object.keys(doc.measure).length ? { measure: doc.measure } : {}),
     prices,
   };
+}
+
+/**
+ * A product's departments, folding in the legacy single `department` field so
+ * items saved before the multi-department migration still report their category.
+ */
+export function productDepartments(doc: ProductDoc): string[] {
+  const list = Array.isArray(doc.departments) ? doc.departments : [];
+  const merged = doc.department && !list.includes(doc.department)
+    ? [...list, doc.department]
+    : list;
+  return merged.filter((d): d is string => typeof d === 'string' && d.length > 0);
 }
 
 // ─── Opaque keyset-pagination cursor ─────────────────────────────────────────

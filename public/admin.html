@@ -16,6 +16,7 @@
       --ok: #059669;
       --chip: #eef2ff;
       --chip-text: #3730a3;
+      --danger: #b91c1c;
     }
     * { box-sizing: border-box; }
     body {
@@ -46,6 +47,24 @@
       color: var(--text);
     }
     .controls input:focus { outline: 2px solid var(--primary); border-color: var(--primary); }
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-top: 10px;
+    }
+    .filters label { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 3px; }
+    select {
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+      background: var(--surface);
+      color: var(--text);
+      min-width: 130px;
+    }
+    select:focus { outline: 2px solid var(--primary); border-color: var(--primary); }
     button {
       padding: 9px 14px;
       border: none;
@@ -62,7 +81,7 @@
     button.ghost:hover { background: var(--chip); }
     main { max-width: 960px; margin: 0 auto; padding: 16px 14px 60px; }
     .status { color: var(--muted); font-size: 14px; padding: 10px 2px; }
-    .status.err { color: #b91c1c; }
+    .status.err { color: var(--danger); }
     .card {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -95,22 +114,45 @@
     .price-row .amount { font-weight: 700; }
     .price-row .sub { color: var(--muted); font-size: 12px; }
     .dept {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
       margin-top: 12px;
       border-top: 1px solid var(--border);
       padding-top: 12px;
     }
-    .dept label { font-size: 13px; font-weight: 600; }
-    .dept input {
+    .dept > label { font-size: 13px; font-weight: 600; display: block; margin-bottom: 8px; }
+    .dept-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+    .dept-chips:empty::before { content: 'ללא מחלקה'; color: var(--muted); font-size: 13px; }
+    .dept-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--chip);
+      color: var(--chip-text);
+      border-radius: 999px;
+      padding: 3px 6px 3px 12px;
+      font-size: 13px;
+    }
+    .dept-chip button {
+      all: unset;
+      cursor: pointer;
+      width: 18px;
+      height: 18px;
+      line-height: 18px;
+      text-align: center;
+      border-radius: 999px;
+      color: var(--chip-text);
+      font-size: 15px;
+      font-weight: 700;
+    }
+    .dept-chip button:hover { background: rgba(55, 48, 163, .15); }
+    .dept-add { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .dept-add input {
       flex: 1 1 180px;
       padding: 8px 10px;
       border: 1px solid var(--border);
       border-radius: 8px;
       font-size: 14px;
     }
+    .dept-actions { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
     .saved { color: var(--ok); font-size: 13px; font-weight: 600; opacity: 0; transition: opacity .2s; }
     .saved.show { opacity: 1; }
     .hint { color: var(--muted); font-size: 13px; }
@@ -125,6 +167,26 @@
       <input id="search" type="text" placeholder="חיפוש מוצר (שם) — או השאר ריק לעיון בכל הקטלוג" />
       <button id="reload">טען</button>
     </div>
+    <div class="filters">
+      <label>מחלקה
+        <select id="fDept">
+          <option value="">כל המחלקות</option>
+          <option value="__none__">ללא מחלקה</option>
+        </select>
+      </label>
+      <label>סופר
+        <select id="fChain">
+          <option value="">כל הסופרים</option>
+        </select>
+      </label>
+      <label>שקיל
+        <select id="fWeighted">
+          <option value="">הכל</option>
+          <option value="1">שקיל בלבד</option>
+          <option value="0">לא שקיל</option>
+        </select>
+      </label>
+    </div>
   </header>
 
   <main>
@@ -133,8 +195,17 @@
     <button id="loadMore" class="ghost" style="display:none">טען עוד</button>
   </main>
 
+  <datalist id="allDepartments"></datalist>
+
   <script>
     (function () {
+      var CHAINS = [
+        { id: 'osher_ad', name: 'אושר עד' },
+        { id: 'rami_levy', name: 'רמי לוי' },
+        { id: 'yohananof', name: 'יוחננוף' },
+        { id: 'tiv_taam', name: 'טיב טעם' },
+      ];
+
       var els = {
         apiKey: document.getElementById('apiKey'),
         search: document.getElementById('search'),
@@ -142,9 +213,22 @@
         status: document.getElementById('status'),
         list: document.getElementById('list'),
         loadMore: document.getElementById('loadMore'),
+        fDept: document.getElementById('fDept'),
+        fChain: document.getElementById('fChain'),
+        fWeighted: document.getElementById('fWeighted'),
+        allDepartments: document.getElementById('allDepartments'),
       };
 
       var state = { mode: 'browse', cursor: null, hasMore: false, loading: false };
+      var allDepartments = [];
+
+      // Populate the chain filter once.
+      CHAINS.forEach(function (c) {
+        var opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = c.name;
+        els.fChain.appendChild(opt);
+      });
 
       // ── API key persistence ──────────────────────────────────────────────
       els.apiKey.value = localStorage.getItem('catalogApiKey') || '';
@@ -167,6 +251,49 @@
         if (res.status === 401) throw new Error('מפתח API שגוי או חסר (401)');
         if (!res.ok) throw new Error('שגיאת שרת ' + res.status);
         return res.json();
+      }
+
+      // ── Departments (dropdown + filter) ──────────────────────────────────
+      function rememberDepartments(names) {
+        var changed = false;
+        names.forEach(function (n) {
+          if (n && allDepartments.indexOf(n) === -1) { allDepartments.push(n); changed = true; }
+        });
+        if (changed) { allDepartments.sort(function (a, b) { return a.localeCompare(b, 'he'); }); renderDepartmentOptions(); }
+      }
+
+      function renderDepartmentOptions() {
+        // Datalist for the per-card add inputs.
+        els.allDepartments.innerHTML = '';
+        allDepartments.forEach(function (n) {
+          var o = document.createElement('option');
+          o.value = n;
+          els.allDepartments.appendChild(o);
+        });
+        // Filter <select> — preserve the current selection across rebuilds.
+        var current = els.fDept.value;
+        els.fDept.innerHTML = '';
+        [['', 'כל המחלקות'], ['__none__', 'ללא מחלקה']].forEach(function (pair) {
+          var o = document.createElement('option');
+          o.value = pair[0]; o.textContent = pair[1];
+          els.fDept.appendChild(o);
+        });
+        allDepartments.forEach(function (n) {
+          var o = document.createElement('option');
+          o.value = n; o.textContent = n;
+          els.fDept.appendChild(o);
+        });
+        els.fDept.value = current;
+      }
+
+      async function loadDepartments() {
+        try {
+          var data = await api('/api/departments');
+          allDepartments = (data.departments || []).slice();
+          renderDepartmentOptions();
+        } catch (err) {
+          // Non-fatal: the add inputs still accept free text.
+        }
       }
 
       // ── Rendering ────────────────────────────────────────────────────────
@@ -225,44 +352,92 @@
           c.appendChild(pr);
         }
 
-        // Department editor
-        var dept = el('div', 'dept');
-        dept.appendChild(el('label', null, 'מחלקה:'));
-        var input = el('input');
-        input.type = 'text';
-        input.placeholder = 'ללא מחלקה';
-        input.value = p.department || '';
-        dept.appendChild(input);
-        var save = el('button', null, 'שמור');
-        var saved = el('span', 'saved', '✓ נשמר');
-        save.addEventListener('click', function () {
-          saveDepartment(p, input, save, saved);
-        });
-        input.addEventListener('keydown', function (e) {
-          if (e.key === 'Enter') saveDepartment(p, input, save, saved);
-        });
-        dept.appendChild(save);
-        dept.appendChild(saved);
-        c.appendChild(dept);
-
+        c.appendChild(departmentEditor(p));
         return c;
       }
 
-      async function saveDepartment(p, input, save, saved) {
-        var value = input.value.trim();
+      // Multi-department editor: chips for the current set, plus an input
+      // (backed by a datalist of existing departments) to add more.
+      function departmentEditor(p) {
+        var wrap = el('div', 'dept');
+        wrap.appendChild(el('label', null, 'מחלקות:'));
+
+        var working = (p.departments || []).slice();
+        var chips = el('div', 'dept-chips');
+
+        function renderChips() {
+          chips.innerHTML = '';
+          working.forEach(function (name, idx) {
+            var ch = el('span', 'dept-chip');
+            ch.appendChild(document.createTextNode(name));
+            var rm = el('button', null, '×');
+            rm.type = 'button';
+            rm.title = 'הסר';
+            rm.addEventListener('click', function () {
+              working.splice(idx, 1);
+              renderChips();
+            });
+            ch.appendChild(rm);
+            chips.appendChild(ch);
+          });
+        }
+        renderChips();
+        wrap.appendChild(chips);
+
+        var addRow = el('div', 'dept-add');
+        var input = el('input');
+        input.type = 'text';
+        input.setAttribute('list', 'allDepartments');
+        input.placeholder = 'בחר מחלקה קיימת או הוסף חדשה';
+        addRow.appendChild(input);
+        var addBtn = el('button', 'ghost', 'הוסף');
+        addBtn.type = 'button';
+        addRow.appendChild(addBtn);
+        wrap.appendChild(addRow);
+
+        function addValue() {
+          var v = input.value.trim();
+          if (!v) return;
+          var exists = working.some(function (w) { return w.toLowerCase() === v.toLowerCase(); });
+          if (!exists) { working.push(v); renderChips(); }
+          input.value = '';
+          input.focus();
+        }
+        addBtn.addEventListener('click', addValue);
+        input.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); addValue(); }
+        });
+
+        var actions = el('div', 'dept-actions');
+        var save = el('button', null, 'שמור');
+        save.type = 'button';
+        var saved = el('span', 'saved', '✓ נשמר');
+        save.addEventListener('click', function () {
+          // Fold a half-typed value into the set before saving.
+          addValue();
+          saveDepartments(p, working, save, saved);
+        });
+        actions.appendChild(save);
+        actions.appendChild(saved);
+        wrap.appendChild(actions);
+
+        return wrap;
+      }
+
+      async function saveDepartments(p, working, save, saved) {
         save.disabled = true;
         saved.classList.remove('show');
         try {
           var data = await api('/api/products/' + encodeURIComponent(p.id), {
             method: 'PATCH',
-            body: JSON.stringify({ department: value }),
+            body: JSON.stringify({ departments: working }),
           });
-          p.department = (data.product && data.product.department) || '';
-          input.value = p.department;
+          p.departments = (data.product && data.product.departments) || [];
+          rememberDepartments(p.departments);
           saved.classList.add('show');
           setTimeout(function () { saved.classList.remove('show'); }, 1800);
         } catch (err) {
-          setStatus('שמירת המחלקה נכשלה: ' + err.message, true);
+          setStatus('שמירת המחלקות נכשלה: ' + err.message, true);
         } finally {
           save.disabled = false;
         }
@@ -270,6 +445,33 @@
 
       function appendProducts(items) {
         items.forEach(function (p) { els.list.appendChild(card(p)); });
+      }
+
+      // ── Filters ──────────────────────────────────────────────────────────
+      function filterParams() {
+        var params = [];
+        if (els.fChain.value) params.push('chain=' + encodeURIComponent(els.fChain.value));
+        if (els.fDept.value) params.push('department=' + encodeURIComponent(els.fDept.value));
+        if (els.fWeighted.value) params.push('weighted=' + encodeURIComponent(els.fWeighted.value));
+        return params;
+      }
+
+      // Client-side equivalent for search results (the search endpoint has no
+      // filter params).
+      function matchesFilters(p) {
+        var chain = els.fChain.value;
+        if (chain && !(p.prices || []).some(function (pr) { return pr.chainId === chain; })) return false;
+        var dep = els.fDept.value;
+        if (dep === '__none__') {
+          if ((p.departments || []).length) return false;
+        } else if (dep) {
+          if ((p.departments || []).indexOf(dep) === -1) return false;
+        }
+        var w = els.fWeighted.value;
+        var isW = p.measure && p.measure.isWeighted === true;
+        if (w === '1' && !isW) return false;
+        if (w === '0' && isW) return false;
+        return true;
       }
 
       // ── Data loading ─────────────────────────────────────────────────────
@@ -280,8 +482,9 @@
         els.loadMore.disabled = true;
         setStatus('טוען מוצרים…');
         try {
-          var q = '/api/products?limit=50' + (state.cursor ? '&cursor=' + encodeURIComponent(state.cursor) : '');
-          var data = await api(q);
+          var params = ['limit=50'].concat(filterParams());
+          if (state.cursor) params.push('cursor=' + encodeURIComponent(state.cursor));
+          var data = await api('/api/products?' + params.join('&'));
           appendProducts(data.products || []);
           state.cursor = data.cursor;
           state.hasMore = !!data.hasMore;
@@ -303,8 +506,9 @@
         setStatus('מחפש "' + term + '"…');
         try {
           var data = await api('/api/products/search?q=' + encodeURIComponent(term) + '&max=25');
-          appendProducts(data.products || []);
-          setStatus((data.products || []).length + ' תוצאות עבור "' + term + '"');
+          var results = (data.products || []).filter(matchesFilters);
+          appendProducts(results);
+          setStatus(results.length + ' תוצאות עבור "' + term + '"');
         } catch (err) {
           setStatus(err.message, true);
         } finally {
@@ -323,8 +527,11 @@
       els.reload.addEventListener('click', run);
       els.search.addEventListener('keydown', function (e) { if (e.key === 'Enter') run(); });
       els.loadMore.addEventListener('click', function () { loadBrowse(false); });
+      [els.fDept, els.fChain, els.fWeighted].forEach(function (sel) {
+        sel.addEventListener('change', run);
+      });
 
-      if (key()) run();
+      if (key()) { loadDepartments(); run(); }
       else setStatus('הזן מפתח API כדי להתחיל.');
     })();
   </script>

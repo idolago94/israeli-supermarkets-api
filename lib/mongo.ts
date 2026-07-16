@@ -76,9 +76,16 @@ export interface ProductDoc {
   /** Human-readable size label ("1.32 ליטר"), derived at parse time. */
   unitQty?: string;
   /**
-   * Manually-assigned department/category. Not present in the source files, so
-   * the sync never writes it — it's set only via the admin endpoint and thus
-   * survives every re-sync (the sync's $set doesn't include this field).
+   * Manually-assigned departments/categories. Not present in the source files,
+   * so the sync never writes them — they're set only via the admin endpoint and
+   * thus survive every re-sync (the sync's $set doesn't include this field). An
+   * item may belong to several departments at once.
+   */
+  departments?: string[];
+  /**
+   * Legacy single-department field. Superseded by `departments` (which supports
+   * multiple values); still read for backward compatibility until every product
+   * has been re-saved through the admin screen, at which point it's unset.
    */
   department?: string;
   measure?: ProductMeasure;
@@ -130,6 +137,9 @@ async function ensureIndexes(db: Db): Promise<void> {
     col.createIndex({ nameLower: 1 }),
     // Word-prefix autocomplete (array-contains equivalent).
     col.createIndex({ keywords: 1 }),
+    // Department filtering (admin screen + app grouping). Multikey over the
+    // departments array; sparse so the many un-categorized products are skipped.
+    col.createIndex({ departments: 1 }, { sparse: true }),
     // Per-chain catalog sort (cheapest first), one index per chain. The
     // partial filter also excludes products the chain doesn't carry.
     ...INDEXED_CHAINS.map((id) =>

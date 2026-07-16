@@ -34,22 +34,24 @@ a cron. Push notifications also stay in Firebase.
 
 | Route | Auth | Purpose |
 |---|---|---|
-| `GET /api/products?chain=&limit=&cursor=` | `x-api-key` | Paginated catalog (keyset). `chain` filters + sorts cheapest-first. |
+| `GET /api/products?chain=&department=&weighted=&limit=&cursor=` | `x-api-key` | Paginated catalog (keyset). `chain` filters + sorts cheapest-first; `department` (or `__none__`) and `weighted` (`0`/`1`) narrow the set. |
 | `GET /api/products/search?q=&max=` | `x-api-key` | Prefix + keyword search. |
 | `GET /api/products/:barcode` | `x-api-key` | Single product. |
-| `PATCH /api/products/:barcode` | `x-api-key` | Update the product's `department` (`{ "department": "..." }`; blank clears it). |
+| `PATCH /api/products/:barcode` | `x-api-key` | Update the product's `departments` (`{ "departments": ["...", "..."] }`; empty array clears them). |
+| `GET /api/departments` | `x-api-key` | Distinct department names across the catalog (admin dropdown + app grouping). |
 | `GET/POST /api/sync/full?chain=` | `x-sync-secret` | Full PriceFull sync (one chain, or all). Triggered by Firebase. |
 | `GET/POST /api/sync/deltas?chain=` | `x-sync-secret` | Intraday delta sync. Triggered by Firebase. |
 
 Static page: **`/admin.html`** — an RTL admin screen (in `public/`) that lists
-every product with all of its info and lets you edit each product's
-`department` inline. It calls the read/PATCH endpoints above with an
-`x-api-key` you paste in (stored in `localStorage`).
+every product with all of its info, lets you assign each product to **multiple
+departments** (pick from existing ones or add a new one) inline, and filter the
+catalog by department / chain (סופר) / weighted (שקיל). It calls the read/PATCH
+endpoints above with an `x-api-key` you paste in (stored in `localStorage`).
 
 ## Product fields
 
 Each product document carries everything the parser extracts from the Cerberus
-`Item`, plus a manually-assigned department:
+`Item`, plus manually-assigned departments:
 
 | Field | Source | Notes |
 |---|---|---|
@@ -64,7 +66,7 @@ Each product document carries everything the parser extracts from the Cerberus
 | `prices.<chain>.price` | `ItemPrice` | Shelf price, per chain. |
 | `prices.<chain>.unitOfMeasurePrice` | `UnitOfMeasurePrice` | Price per unit of measure (₪/ליטר). |
 | `prices.<chain>.allowDiscount` | `AllowDiscount` | Whether the chain allows discounts. |
-| `department` | **manual** | Set via the admin screen / PATCH. Not in the source, so the sync never overwrites it — it survives every re-sync. |
+| `departments[]` | **manual** | One or more categories, set via the admin screen / PATCH. Not in the source, so the sync never overwrites them — they survive every re-sync. The legacy single `department` field is still read for backward compatibility until a product is re-saved. |
 
 ## Environment variables
 
