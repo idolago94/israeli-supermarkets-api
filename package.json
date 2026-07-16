@@ -5,7 +5,7 @@
   "description": "Price-comparison catalog API — MongoDB-backed catalog + Cerberus price-sync, deployed on Vercel.",
   "scripts": {
     "build": "tsc --noEmit",
-    "dev": "vercel dev"
+    "vercel-dev": "vercel dev"
   },
   "engines": { "node": ">=20" },
   "dependencies": {
