@@ -24,10 +24,11 @@ Firebase (scheduled) ──► POST /api/sync/{full|deltas}   (x-sync-secret)
         Expo app ──► GET /api/products/*  (x-api-key)
 ```
 
-This service is intentionally **just two things**: the sync worker (scrape →
-parse → MongoDB) and the read API. It has **no scheduler of its own** — the
-scheduled **Firebase functions** (`functions/src/catalogSync.ts`) call the
-`/api/sync/*` endpoints on a cron. Push notifications also stay in Firebase.
+This service is intentionally focused: the sync worker (scrape → parse →
+MongoDB), the read API, and a small admin screen for editing product
+departments. It has **no scheduler of its own** — the scheduled **Firebase
+functions** (`functions/src/catalogSync.ts`) call the `/api/sync/*` endpoints on
+a cron. Push notifications also stay in Firebase.
 
 ## Endpoints
 
@@ -36,8 +37,34 @@ scheduled **Firebase functions** (`functions/src/catalogSync.ts`) call the
 | `GET /api/products?chain=&limit=&cursor=` | `x-api-key` | Paginated catalog (keyset). `chain` filters + sorts cheapest-first. |
 | `GET /api/products/search?q=&max=` | `x-api-key` | Prefix + keyword search. |
 | `GET /api/products/:barcode` | `x-api-key` | Single product. |
+| `PATCH /api/products/:barcode` | `x-api-key` | Update the product's `department` (`{ "department": "..." }`; blank clears it). |
 | `GET/POST /api/sync/full?chain=` | `x-sync-secret` | Full PriceFull sync (one chain, or all). Triggered by Firebase. |
 | `GET/POST /api/sync/deltas?chain=` | `x-sync-secret` | Intraday delta sync. Triggered by Firebase. |
+
+Static page: **`/admin.html`** — an RTL admin screen (in `public/`) that lists
+every product with all of its info and lets you edit each product's
+`department` inline. It calls the read/PATCH endpoints above with an
+`x-api-key` you paste in (stored in `localStorage`).
+
+## Product fields
+
+Each product document carries everything the parser extracts from the Cerberus
+`Item`, plus a manually-assigned department:
+
+| Field | Source | Notes |
+|---|---|---|
+| `name`, `nameLower`, `keywords[]` | `ItemName` | Name + search tokens. |
+| `brand` | `ManufactureName` | Manufacturer; omitted when "לא ידוע". |
+| `unitQty` | `Quantity` + `UnitOfMeasure` | Derived display label ("1.32 ליטר"). |
+| `measure.unitQty` | `UnitQty` | The unit the item is priced by. |
+| `measure.quantity` | `Quantity` | Numeric size. |
+| `measure.unitOfMeasure` | `UnitOfMeasure` | Unit of `quantity`. |
+| `measure.qtyInPackage` | `QtyInPackage` | Units per package. |
+| `measure.isWeighted` | `bIsWeighted` | Sold by weight (deli/produce). |
+| `prices.<chain>.price` | `ItemPrice` | Shelf price, per chain. |
+| `prices.<chain>.unitOfMeasurePrice` | `UnitOfMeasurePrice` | Price per unit of measure (₪/ליטר). |
+| `prices.<chain>.allowDiscount` | `AllowDiscount` | Whether the chain allows discounts. |
+| `department` | **manual** | Set via the admin screen / PATCH. Not in the source, so the sync never overwrites it — it survives every re-sync. |
 
 ## Environment variables
 
