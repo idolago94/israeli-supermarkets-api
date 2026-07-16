@@ -8,6 +8,7 @@ export interface ApiProduct {
   name: string;
   brand?: string;
   unitQty?: string;
+  department?: string;
   measure?: {
     unitQty?: string;
     quantity?: number;
@@ -46,6 +47,7 @@ export function toApiProduct(doc: ProductDoc): ApiProduct {
     name: doc.name ?? '',
     ...(doc.brand ? { brand: doc.brand } : {}),
     ...(doc.unitQty ? { unitQty: doc.unitQty } : {}),
+    ...(doc.department ? { department: doc.department } : {}),
     ...(doc.measure && Object.keys(doc.measure).length ? { measure: doc.measure } : {}),
     prices,
   };

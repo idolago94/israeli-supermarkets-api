@@ -75,6 +75,12 @@ export interface ProductDoc {
   brand?: string;
   /** Human-readable size label ("1.32 ליטר"), derived at parse time. */
   unitQty?: string;
+  /**
+   * Manually-assigned department/category. Not present in the source files, so
+   * the sync never writes it — it's set only via the admin endpoint and thus
+   * survives every re-sync (the sync's $set doesn't include this field).
+   */
+  department?: string;
   measure?: ProductMeasure;
   keywords?: string[];
   prices: Record<string, ChainPrice>;
