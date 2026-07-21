@@ -108,6 +108,32 @@ syncs are driven by the Firebase functions `syncCatalogFull` / `syncCatalogDelta
 schedule alongside the app's other Cloud Functions. See
 [`docs/CATALOG_SETUP.md`](../docs/CATALOG_SETUP.md) for the full wiring.
 
+## Downloading a chain's raw catalog locally
+
+`scripts/download-catalog.ts` bypasses MongoDB entirely: it logs into Cerberus,
+grabs the chain's latest `PriceFull` file, and writes both the raw XML and a
+parsed JSON to disk. Useful for inspecting a chain's source data without
+touching the database — no env vars required.
+
+```bash
+cd catalog-api
+npx ts-node scripts/download-catalog.ts <chainId> [outDir]
+
+# e.g.
+npx ts-node scripts/download-catalog.ts osher_ad ./out
+```
+
+Known `chainId`s: `osher_ad`, `rami_levy`, `yohananof`, `tiv_taam` (see `CHAINS`
+in `lib/sync.ts`). `outDir` defaults to the current directory. Output files:
+
+- `<chainId>.PriceFull.xml` — the raw file as published by the chain.
+- `<chainId>.catalog.json` — the same data parsed via `lib/parse.ts`
+  (`code`, `name`, `price`, `brand`, unit/measure fields, etc.).
+
+The download only covers the chain's default listed branch (no `storeId`
+filter) — it fetches whichever single store's `PriceFull` file the portal
+lists first for that chain.
+
 ## Notes & limits
 
 - A call to `/api/sync/{mode}` with no `chain` runs all chains sequentially
