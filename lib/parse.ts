@@ -115,19 +115,27 @@ export function pickCanonicalName(names: string[]): string {
   });
 }
 
-/** Word-prefix tokens powering the client's autocomplete keyword query. */
+/**
+ * Word-prefix tokens powering the client's autocomplete keyword query.
+ *
+ * Every word in the name is indexed (each truncated to a 12-char prefix set),
+ * with no cap on the number of words or the total keyword count. Earlier limits
+ * (first 8 words / 80 keywords) silently dropped the distinguishing tail words
+ * of long Hebrew product names — e.g. "דל לקטוז" at the end of a long milk name
+ * — so those products never matched a `$all` search on the missing tokens.
+ */
 export function generateKeywords(name: string): string[] {
   const words = name
     .toLowerCase()
     .split(/[^\p{L}\p{N}%]+/u)
     .filter((w) => w.length >= 2);
   const out = new Set<string>();
-  for (const word of words.slice(0, 8)) {
+  for (const word of words) {
     for (let i = 2; i <= Math.min(word.length, 12); i++) {
       out.add(word.slice(0, i));
     }
   }
-  return [...out].slice(0, 80);
+  return [...out];
 }
 
 function trimTrailingZeros(qty: string): string {
