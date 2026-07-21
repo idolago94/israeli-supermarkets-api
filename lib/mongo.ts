@@ -45,6 +45,9 @@ async function connect(): Promise<MongoClient> {
 
 export interface ChainPrice {
   chainName: string;
+  /** The product name as this chain writes it. Kept per-chain so the top-level
+   *  `name` can be chosen canonically instead of "last chain to sync wins". */
+  name?: string;
   price: number;
   /** Source UnitOfMeasurePrice — price per unit of measure (₪/ליטר). */
   unitOfMeasurePrice?: number;
@@ -70,6 +73,9 @@ export interface ProductMeasure {
 export interface ProductDoc {
   /** Normalized barcode (ItemCode) — also the document _id. */
   _id: string;
+  /** Canonical display name, chosen deterministically from the per-chain names
+   *  in `prices.<chain>.name` (the shortest one) rather than "last chain wins".
+   *  Recomputed on every sync write; stable regardless of chain sync order. */
   name: string;
   nameLower: string;
   brand?: string;

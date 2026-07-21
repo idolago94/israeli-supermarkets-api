@@ -61,39 +61,113 @@ async function writeChainPrices(chain: ChainConfig, items: ParsedItem[]): Promis
 
   const ops: AnyBulkWriteOperation<ProductDoc>[] = items.map((item) => {
     const keywords = generateKeywords(item.name);
-    const set: Record<string, unknown> = {
+
+    // This chain's price entry. It now carries `name` — the product name as this
+    // chain writes it — so the top-level canonical name can be recomputed below
+    // from every chain's name instead of "last chain to sync wins".
+    const priceEntry: Record<string, unknown> = {
+      chainName: chain.nameHe,
       name: item.name,
-      nameLower: item.name.toLowerCase(),
-      [`prices.${chain.id}`]: {
-        chainName: chain.nameHe,
-        price: item.price,
-        ...(item.unitOfMeasurePrice != null ? { unitOfMeasurePrice: item.unitOfMeasurePrice } : {}),
-        ...(item.allowDiscount != null ? { allowDiscount: item.allowDiscount } : {}),
-        updatedAt: now,
-      },
+      price: item.price,
+      ...(item.unitOfMeasurePrice != null ? { unitOfMeasurePrice: item.unitOfMeasurePrice } : {}),
+      ...(item.allowDiscount != null ? { allowDiscount: item.allowDiscount } : {}),
       updatedAt: now,
     };
-    if (item.brand) set.brand = item.brand;
-    if (item.unitQty) set.unitQty = item.unitQty;
 
     // Product-level measurement attributes. Written as one object so each chain
     // overwrites it wholesale (values are intrinsic to the barcode, so they
-    // agree across chains — same merge behavior as brand/unitQty above).
+    // agree across chains — same merge behavior as brand/unitQty).
     const measure: Record<string, unknown> = {};
     if (item.measureUnitQty) measure.unitQty = item.measureUnitQty;
     if (item.quantity != null) measure.quantity = item.quantity;
     if (item.unitOfMeasure) measure.unitOfMeasure = item.unitOfMeasure;
     if (item.qtyInPackage) measure.qtyInPackage = item.qtyInPackage;
     if (item.isWeighted != null) measure.isWeighted = item.isWeighted;
-    if (Object.keys(measure).length) set.measure = measure;
+
+    // First pipeline stage: this chain's fields. Source-derived constants are
+    // wrapped in $literal so a value starting with '$' is never parsed as a
+    // field path. keywords accumulate across chains ($setUnion mirrors the old
+    // $addToSet, preserving cross-chain search recall).
+    const setStage: Record<string, unknown> = {
+      [`prices.${chain.id}`]: { $literal: priceEntry },
+      updatedAt: { $literal: now },
+    };
+    if (item.brand) setStage.brand = { $literal: item.brand };
+    if (item.unitQty) setStage.unitQty = { $literal: item.unitQty };
+    if (Object.keys(measure).length) setStage.measure = { $literal: measure };
+    if (keywords.length) {
+      setStage.keywords = { $setUnion: [{ $ifNull: ['$keywords', []] }, { $literal: keywords }] };
+    }
+
+    // Aggregation-pipeline update (not an operator doc) so the canonical name is
+    // derived from every chain's name in the same atomic write, keeping name /
+    // nameLower stable regardless of chain sync order. See pickCanonicalName()
+    // in parse.ts for the JS reference of the selection rule.
+    const pipeline = [
+      { $set: setStage },
+      {
+        // name = shortest non-empty per-chain name (tiebreak: codepoint order).
+        // Empty names are filtered out first — otherwise a chain without a name
+        // (length 0) would always "win" and blank the field. Falls back to the
+        // existing name when no chain has a per-chain name yet (migration).
+        $set: {
+          name: {
+            $let: {
+              vars: {
+                names: {
+                  $filter: {
+                    input: {
+                      $map: {
+                        input: { $objectToArray: '$prices' },
+                        as: 'p',
+                        in: { $ifNull: ['$$p.v.name', ''] },
+                      },
+                    },
+                    as: 'n',
+                    cond: { $gt: [{ $strLenCP: '$$n' }, 0] },
+                  },
+                },
+              },
+              in: {
+                $cond: [
+                  { $eq: [{ $size: '$$names' }, 0] },
+                  { $ifNull: ['$name', ''] },
+                  {
+                    $reduce: {
+                      input: '$$names',
+                      initialValue: { $arrayElemAt: ['$$names', 0] },
+                      in: {
+                        $cond: [
+                          {
+                            $or: [
+                              { $lt: [{ $strLenCP: '$$this' }, { $strLenCP: '$$value' }] },
+                              {
+                                $and: [
+                                  { $eq: [{ $strLenCP: '$$this' }, { $strLenCP: '$$value' }] },
+                                  { $lt: ['$$this', '$$value'] },
+                                ],
+                              },
+                            ],
+                          },
+                          '$$this',
+                          '$$value',
+                        ],
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+      { $set: { nameLower: { $toLower: '$name' } } },
+    ];
 
     return {
       updateOne: {
         filter: { _id: item.code },
-        update: {
-          $set: set,
-          ...(keywords.length ? { $addToSet: { keywords: { $each: keywords } } } : {}),
-        },
+        update: pipeline,
         upsert: true,
       },
     };

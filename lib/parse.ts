@@ -94,6 +94,27 @@ export function searchTokens(term: string): string[] {
   return [...new Set(words)];
 }
 
+/**
+ * Pick the canonical display name from the names the individual chains give the
+ * same product. Rule: the **shortest** non-empty name (the most concise, least
+ * marketing-padded), with a Hebrew-collated tiebreak for determinism on equal
+ * lengths. Empty/whitespace names are ignored; an all-empty input yields ''.
+ *
+ * This is the JS spec/reference for the selection the sync performs inline via
+ * an aggregation-pipeline update in `writeChainPrices` (lib/sync.ts). To switch
+ * the product rule (e.g. longest, or chain-priority), change this one function
+ * and the matching pipeline stage.
+ */
+export function pickCanonicalName(names: string[]): string {
+  const cleaned = names.map((n) => (n ?? '').trim()).filter((n) => n.length > 0);
+  if (!cleaned.length) return '';
+  return cleaned.reduce((best, n) => {
+    if (n.length < best.length) return n;
+    if (n.length === best.length && n.localeCompare(best, 'he') < 0) return n;
+    return best;
+  });
+}
+
 /** Word-prefix tokens powering the client's autocomplete keyword query. */
 export function generateKeywords(name: string): string[] {
   const words = name
