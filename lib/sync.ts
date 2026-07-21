@@ -105,7 +105,10 @@ async function writeChainPrices(chain: ChainConfig, items: ParsedItem[]): Promis
 
 // ─── Full sync (nightly) ──────────────────────────────────────────────────────
 
-export async function syncChainFull(chain: ChainConfig): Promise<unknown> {
+export async function syncChainFull(
+  chain: ChainConfig,
+  opts: { skipUnchangedCheck?: boolean } = {},
+): Promise<unknown> {
   const cookie = await cerberusLogin(chain.username);
   const files = await cerberusListFiles(cookie, 'PriceFull');
   const file = pickLatestFile(files, chain.storeId);
@@ -115,8 +118,10 @@ export async function syncChainFull(chain: ChainConfig): Promise<unknown> {
   const meta = await headFileMeta(cookie, file);
 
   // Skip the (potentially tens-of-MB) download entirely when the chain hasn't
-  // republished since the last successful run.
+  // republished since the last successful run. Callers can force a re-download
+  // (e.g. to backfill after a parsing bug fix) via opts.skipUnchangedCheck.
   const unchanged =
+    !opts.skipUnchangedCheck &&
     !!state &&
     state.lastFullFile === file &&
     !!meta &&
