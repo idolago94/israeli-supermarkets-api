@@ -55,7 +55,9 @@ Each product document carries everything the parser extracts from the Cerberus
 
 | Field | Source | Notes |
 |---|---|---|
-| `name`, `nameLower`, `keywords[]` | `ItemName` | Name + search tokens. |
+| `name`, `nameLower` | `ItemName` (canonical) | Canonical display name — the **shortest** of the per-chain names (`prices.<chain>.name`), recomputed on every sync so it's stable regardless of chain sync order (see `pickCanonicalName` in `lib/parse.ts`). |
+| `keywords[]` | `ItemName` | Word-prefix search tokens, unioned across chains. |
+| `prices.<chain>.name` | `ItemName` | The product name as this chain writes it; feeds the canonical `name`. |
 | `brand` | `ManufactureName` | Manufacturer; omitted when "לא ידוע". |
 | `unitQty` | `Quantity` + `UnitOfMeasure` | Derived display label ("1.32 ליטר"). |
 | `measure.unitQty` | `UnitQty` | The unit the item is priced by. |
