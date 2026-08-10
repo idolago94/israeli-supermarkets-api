@@ -1,0 +1,539 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ניהול קטלוג — מחלקות מוצרים</title>
+  <style>
+    :root {
+      --bg: #f4f5f7;
+      --surface: #ffffff;
+      --border: #e2e5ea;
+      --text: #1a1d23;
+      --muted: #6b7280;
+      --primary: #2563eb;
+      --primary-dark: #1d4ed8;
+      --ok: #059669;
+      --chip: #eef2ff;
+      --chip-text: #3730a3;
+      --danger: #b91c1c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 18px;
+    }
+    header h1 { margin: 0 0 10px; font-size: 18px; }
+    .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .controls input[type="text"], .controls input[type="password"] {
+      flex: 1 1 220px;
+      min-width: 160px;
+      padding: 9px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+      background: var(--surface);
+      color: var(--text);
+    }
+    .controls input:focus { outline: 2px solid var(--primary); border-color: var(--primary); }
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-top: 10px;
+    }
+    .filters label { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 3px; }
+    select {
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+      background: var(--surface);
+      color: var(--text);
+      min-width: 130px;
+    }
+    select:focus { outline: 2px solid var(--primary); border-color: var(--primary); }
+    button {
+      padding: 9px 14px;
+      border: none;
+      border-radius: 8px;
+      background: var(--primary);
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: var(--primary-dark); }
+    button:disabled { opacity: .5; cursor: default; }
+    button.ghost { background: transparent; color: var(--primary); border: 1px solid var(--border); }
+    button.ghost:hover { background: var(--chip); }
+    main { max-width: 960px; margin: 0 auto; padding: 16px 14px 60px; }
+    .status { color: var(--muted); font-size: 14px; padding: 10px 2px; }
+    .status.err { color: var(--danger); }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 16px;
+      margin-bottom: 12px;
+    }
+    .card h2 { margin: 0 0 2px; font-size: 15px; }
+    .barcode { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+    .chip {
+      background: var(--chip);
+      color: var(--chip-text);
+      border-radius: 999px;
+      padding: 2px 10px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .chip b { font-weight: 700; }
+    .prices { margin: 8px 0 4px; border-top: 1px dashed var(--border); padding-top: 8px; }
+    .price-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: baseline;
+      font-size: 13px;
+      padding: 3px 0;
+    }
+    .price-row .chain { min-width: 90px; color: var(--muted); }
+    .price-row .amount { font-weight: 700; }
+    .price-row .sub { color: var(--muted); font-size: 12px; }
+    .dept {
+      margin-top: 12px;
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+    }
+    .dept > label { font-size: 13px; font-weight: 600; display: block; margin-bottom: 8px; }
+    .dept-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+    .dept-chips:empty::before { content: 'ללא מחלקה'; color: var(--muted); font-size: 13px; }
+    .dept-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--chip);
+      color: var(--chip-text);
+      border-radius: 999px;
+      padding: 3px 6px 3px 12px;
+      font-size: 13px;
+    }
+    .dept-chip button {
+      all: unset;
+      cursor: pointer;
+      width: 18px;
+      height: 18px;
+      line-height: 18px;
+      text-align: center;
+      border-radius: 999px;
+      color: var(--chip-text);
+      font-size: 15px;
+      font-weight: 700;
+    }
+    .dept-chip button:hover { background: rgba(55, 48, 163, .15); }
+    .dept-add { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .dept-add input {
+      flex: 1 1 180px;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    .dept-actions { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+    .saved { color: var(--ok); font-size: 13px; font-weight: 600; opacity: 0; transition: opacity .2s; }
+    .saved.show { opacity: 1; }
+    .hint { color: var(--muted); font-size: 13px; }
+    #loadMore { display: block; margin: 8px auto 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ניהול קטלוג — מחלקות מוצרים</h1>
+    <div class="controls">
+      <input id="apiKey" type="password" placeholder="מפתח API (x-api-key)" autocomplete="off" />
+      <input id="search" type="text" placeholder="חיפוש מוצר (שם) — או השאר ריק לעיון בכל הקטלוג" />
+      <button id="reload">טען</button>
+    </div>
+    <div class="filters">
+      <label>מחלקה
+        <select id="fDept">
+          <option value="">כל המחלקות</option>
+          <option value="__none__">ללא מחלקה</option>
+        </select>
+      </label>
+      <label>סופר
+        <select id="fChain">
+          <option value="">כל הסופרים</option>
+        </select>
+      </label>
+      <label>שקיל
+        <select id="fWeighted">
+          <option value="">הכל</option>
+          <option value="1">שקיל בלבד</option>
+          <option value="0">לא שקיל</option>
+        </select>
+      </label>
+    </div>
+  </header>
+
+  <main>
+    <div id="status" class="status"></div>
+    <div id="list"></div>
+    <button id="loadMore" class="ghost" style="display:none">טען עוד</button>
+  </main>
+
+  <datalist id="allDepartments"></datalist>
+
+  <script>
+    (function () {
+      var CHAINS = [
+        { id: 'osher_ad', name: 'אושר עד' },
+        { id: 'rami_levy', name: 'רמי לוי' },
+        { id: 'yohananof', name: 'יוחננוף' },
+        { id: 'tiv_taam', name: 'טיב טעם' },
+      ];
+
+      var els = {
+        apiKey: document.getElementById('apiKey'),
+        search: document.getElementById('search'),
+        reload: document.getElementById('reload'),
+        status: document.getElementById('status'),
+        list: document.getElementById('list'),
+        loadMore: document.getElementById('loadMore'),
+        fDept: document.getElementById('fDept'),
+        fChain: document.getElementById('fChain'),
+        fWeighted: document.getElementById('fWeighted'),
+        allDepartments: document.getElementById('allDepartments'),
+      };
+
+      var state = { mode: 'browse', cursor: null, hasMore: false, loading: false };
+      var allDepartments = [];
+
+      // Populate the chain filter once.
+      CHAINS.forEach(function (c) {
+        var opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = c.name;
+        els.fChain.appendChild(opt);
+      });
+
+      // ── API key persistence ──────────────────────────────────────────────
+      els.apiKey.value = localStorage.getItem('catalogApiKey') || '';
+      els.apiKey.addEventListener('change', function () {
+        localStorage.setItem('catalogApiKey', els.apiKey.value.trim());
+      });
+
+      function key() { return els.apiKey.value.trim(); }
+
+      function setStatus(msg, isErr) {
+        els.status.textContent = msg || '';
+        els.status.className = 'status' + (isErr ? ' err' : '');
+      }
+
+      async function api(path, opts) {
+        opts = opts || {};
+        var headers = { 'x-api-key': key() };
+        if (opts.body) headers['content-type'] = 'application/json';
+        var res = await fetch(path, { method: opts.method || 'GET', headers: headers, body: opts.body });
+        if (res.status === 401) throw new Error('מפתח API שגוי או חסר (401)');
+        if (!res.ok) throw new Error('שגיאת שרת ' + res.status);
+        return res.json();
+      }
+
+      // ── Departments (dropdown + filter) ──────────────────────────────────
+      function rememberDepartments(names) {
+        var changed = false;
+        names.forEach(function (n) {
+          if (n && allDepartments.indexOf(n) === -1) { allDepartments.push(n); changed = true; }
+        });
+        if (changed) { allDepartments.sort(function (a, b) { return a.localeCompare(b, 'he'); }); renderDepartmentOptions(); }
+      }
+
+      function renderDepartmentOptions() {
+        // Datalist for the per-card add inputs.
+        els.allDepartments.innerHTML = '';
+        allDepartments.forEach(function (n) {
+          var o = document.createElement('option');
+          o.value = n;
+          els.allDepartments.appendChild(o);
+        });
+        // Filter <select> — preserve the current selection across rebuilds.
+        var current = els.fDept.value;
+        els.fDept.innerHTML = '';
+        [['', 'כל המחלקות'], ['__none__', 'ללא מחלקה']].forEach(function (pair) {
+          var o = document.createElement('option');
+          o.value = pair[0]; o.textContent = pair[1];
+          els.fDept.appendChild(o);
+        });
+        allDepartments.forEach(function (n) {
+          var o = document.createElement('option');
+          o.value = n; o.textContent = n;
+          els.fDept.appendChild(o);
+        });
+        els.fDept.value = current;
+      }
+
+      async function loadDepartments() {
+        try {
+          var data = await api('/api/departments');
+          allDepartments = (data.departments || []).slice();
+          renderDepartmentOptions();
+        } catch (err) {
+          // Non-fatal: the add inputs still accept free text.
+        }
+      }
+
+      // ── Rendering ────────────────────────────────────────────────────────
+      function el(tag, cls, text) {
+        var e = document.createElement(tag);
+        if (cls) e.className = cls;
+        if (text != null) e.textContent = text;
+        return e;
+      }
+
+      function chip(label, value) {
+        var c = el('span', 'chip');
+        var b = el('b', null, label + ': ');
+        c.appendChild(b);
+        c.appendChild(document.createTextNode(value));
+        return c;
+      }
+
+      function fmtPrice(n) { return '₪' + Number(n).toFixed(2); }
+
+      function measureChips(m) {
+        var out = [];
+        if (!m) return out;
+        if (m.quantity != null) out.push(chip('כמות', String(m.quantity)));
+        if (m.unitOfMeasure) out.push(chip('יח׳ מידה', m.unitOfMeasure));
+        if (m.unitQty) out.push(chip('נמכר לפי', m.unitQty));
+        if (m.qtyInPackage) out.push(chip('באריזה', m.qtyInPackage));
+        if (m.isWeighted != null) out.push(chip('שקיל', m.isWeighted ? 'כן' : 'לא'));
+        return out;
+      }
+
+      function card(p) {
+        var c = el('div', 'card');
+        c.appendChild(el('h2', null, p.name || '(ללא שם)'));
+        c.appendChild(el('div', 'barcode', 'ברקוד: ' + p.id));
+
+        var meta = el('div', 'meta');
+        if (p.brand) meta.appendChild(chip('מותג', p.brand));
+        if (p.unitQty) meta.appendChild(chip('גודל', p.unitQty));
+        measureChips(p.measure).forEach(function (ch) { meta.appendChild(ch); });
+        if (meta.childNodes.length) c.appendChild(meta);
+
+        if (p.prices && p.prices.length) {
+          var pr = el('div', 'prices');
+          p.prices.forEach(function (price) {
+            var row = el('div', 'price-row');
+            row.appendChild(el('span', 'chain', price.chainName || price.chainId));
+            row.appendChild(el('span', 'amount', fmtPrice(price.price)));
+            var subs = [];
+            if (price.unitOfMeasurePrice != null) subs.push(fmtPrice(price.unitOfMeasurePrice) + ' ליח׳ מידה');
+            if (price.allowDiscount != null) subs.push(price.allowDiscount ? 'מותר הנחה' : 'ללא הנחה');
+            if (price.updatedAt) subs.push('עודכן ' + new Date(price.updatedAt).toLocaleDateString('he-IL'));
+            if (subs.length) row.appendChild(el('span', 'sub', '· ' + subs.join(' · ')));
+            pr.appendChild(row);
+          });
+          c.appendChild(pr);
+        }
+
+        c.appendChild(departmentEditor(p));
+        return c;
+      }
+
+      // Multi-department editor: chips for the current set, plus an input
+      // (backed by a datalist of existing departments) to add more.
+      function departmentEditor(p) {
+        var wrap = el('div', 'dept');
+        wrap.appendChild(el('label', null, 'מחלקות:'));
+
+        var working = (p.departments || []).slice();
+        var chips = el('div', 'dept-chips');
+
+        function renderChips() {
+          chips.innerHTML = '';
+          working.forEach(function (name, idx) {
+            var ch = el('span', 'dept-chip');
+            ch.appendChild(document.createTextNode(name));
+            var rm = el('button', null, '×');
+            rm.type = 'button';
+            rm.title = 'הסר';
+            rm.addEventListener('click', function () {
+              working.splice(idx, 1);
+              renderChips();
+            });
+            ch.appendChild(rm);
+            chips.appendChild(ch);
+          });
+        }
+        renderChips();
+        wrap.appendChild(chips);
+
+        var addRow = el('div', 'dept-add');
+        var input = el('input');
+        input.type = 'text';
+        input.setAttribute('list', 'allDepartments');
+        input.placeholder = 'בחר מחלקה קיימת או הוסף חדשה';
+        addRow.appendChild(input);
+        var addBtn = el('button', 'ghost', 'הוסף');
+        addBtn.type = 'button';
+        addRow.appendChild(addBtn);
+        wrap.appendChild(addRow);
+
+        function addValue() {
+          var v = input.value.trim();
+          if (!v) return;
+          var exists = working.some(function (w) { return w.toLowerCase() === v.toLowerCase(); });
+          if (!exists) { working.push(v); renderChips(); }
+          input.value = '';
+          input.focus();
+        }
+        addBtn.addEventListener('click', addValue);
+        input.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); addValue(); }
+        });
+
+        var actions = el('div', 'dept-actions');
+        var save = el('button', null, 'שמור');
+        save.type = 'button';
+        var saved = el('span', 'saved', '✓ נשמר');
+        save.addEventListener('click', function () {
+          // Fold a half-typed value into the set before saving.
+          addValue();
+          saveDepartments(p, working, save, saved);
+        });
+        actions.appendChild(save);
+        actions.appendChild(saved);
+        wrap.appendChild(actions);
+
+        return wrap;
+      }
+
+      async function saveDepartments(p, working, save, saved) {
+        save.disabled = true;
+        saved.classList.remove('show');
+        try {
+          var data = await api('/api/products/' + encodeURIComponent(p.id), {
+            method: 'PATCH',
+            body: JSON.stringify({ departments: working }),
+          });
+          p.departments = (data.product && data.product.departments) || [];
+          rememberDepartments(p.departments);
+          saved.classList.add('show');
+          setTimeout(function () { saved.classList.remove('show'); }, 1800);
+        } catch (err) {
+          setStatus('שמירת המחלקות נכשלה: ' + err.message, true);
+        } finally {
+          save.disabled = false;
+        }
+      }
+
+      function appendProducts(items) {
+        items.forEach(function (p) { els.list.appendChild(card(p)); });
+      }
+
+      // ── Filters ──────────────────────────────────────────────────────────
+      function filterParams() {
+        var params = [];
+        if (els.fChain.value) params.push('chain=' + encodeURIComponent(els.fChain.value));
+        if (els.fDept.value) params.push('department=' + encodeURIComponent(els.fDept.value));
+        if (els.fWeighted.value) params.push('weighted=' + encodeURIComponent(els.fWeighted.value));
+        return params;
+      }
+
+      // Client-side equivalent for search results (the search endpoint has no
+      // filter params).
+      function matchesFilters(p) {
+        var chain = els.fChain.value;
+        if (chain && !(p.prices || []).some(function (pr) { return pr.chainId === chain; })) return false;
+        var dep = els.fDept.value;
+        if (dep === '__none__') {
+          if ((p.departments || []).length) return false;
+        } else if (dep) {
+          if ((p.departments || []).indexOf(dep) === -1) return false;
+        }
+        var w = els.fWeighted.value;
+        var isW = p.measure && p.measure.isWeighted === true;
+        if (w === '1' && !isW) return false;
+        if (w === '0' && isW) return false;
+        return true;
+      }
+
+      // ── Data loading ─────────────────────────────────────────────────────
+      async function loadBrowse(reset) {
+        if (state.loading) return;
+        if (reset) { els.list.innerHTML = ''; state.cursor = null; }
+        state.loading = true;
+        els.loadMore.disabled = true;
+        setStatus('טוען מוצרים…');
+        try {
+          var params = ['limit=50'].concat(filterParams());
+          if (state.cursor) params.push('cursor=' + encodeURIComponent(state.cursor));
+          var data = await api('/api/products?' + params.join('&'));
+          appendProducts(data.products || []);
+          state.cursor = data.cursor;
+          state.hasMore = !!data.hasMore;
+          els.loadMore.style.display = state.hasMore ? 'block' : 'none';
+          setStatus(els.list.childNodes.length + ' מוצרים נטענו' + (state.hasMore ? ' (יש עוד)' : ''));
+        } catch (err) {
+          setStatus(err.message, true);
+        } finally {
+          state.loading = false;
+          els.loadMore.disabled = false;
+        }
+      }
+
+      async function loadSearch(term) {
+        if (state.loading) return;
+        state.loading = true;
+        els.list.innerHTML = '';
+        els.loadMore.style.display = 'none';
+        setStatus('מחפש "' + term + '"…');
+        try {
+          var data = await api('/api/products/search?q=' + encodeURIComponent(term) + '&max=25');
+          var results = (data.products || []).filter(matchesFilters);
+          appendProducts(results);
+          setStatus(results.length + ' תוצאות עבור "' + term + '"');
+        } catch (err) {
+          setStatus(err.message, true);
+        } finally {
+          state.loading = false;
+        }
+      }
+
+      function run() {
+        if (!key()) { setStatus('הזן מפתח API כדי לטעון את הקטלוג.', true); return; }
+        var term = els.search.value.trim();
+        if (term.length >= 2) { state.mode = 'search'; loadSearch(term); }
+        else { state.mode = 'browse'; loadBrowse(true); }
+      }
+
+      // ── Events ───────────────────────────────────────────────────────────
+      els.reload.addEventListener('click', run);
+      els.search.addEventListener('keydown', function (e) { if (e.key === 'Enter') run(); });
+      els.loadMore.addEventListener('click', function () { loadBrowse(false); });
+      [els.fDept, els.fChain, els.fWeighted].forEach(function (sel) {
+        sel.addEventListener('change', run);
+      });
+
+      if (key()) { loadDepartments(); run(); }
+      else setStatus('הזן מפתח API כדי להתחיל.');
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,123 @@
+name: catalog sync
+
+# ─── The catalog scheduler ────────────────────────────────────────────────────
+#
+# This workflow *is* the scheduler for the catalog. It replaces the Firebase
+# scheduled functions (`syncCatalogFull` / `syncCatalogDeltas`) that used to
+# drive the sync from the app's repo: the schedule now ships with the service
+# itself, runs on GitHub's cron, and needs no Firebase Blaze plan.
+#
+# Each run POSTs to the deployed service's `/api/sync/{full|deltas}` endpoint
+# once **per chain**, sequentially. Per-chain calls keep every invocation well
+# inside the platform's function time limit (a single `?chain=` sync is one
+# download + parse), and a chain that fails no longer hides the others.
+#
+# GitHub cron is UTC-only while the chains publish on Israel time, so the times
+# below are Israel *winter* time (UTC+2). During daylight saving (UTC+3) each
+# run lands one hour later locally — harmless for a catalog refresh.
+#
+# Required repository secrets — Settings → Secrets and variables → Actions:
+#   CATALOG_API_BASE   e.g. https://israeli-supermarkets-api.vercel.app  (no trailing slash)
+#   SYNC_SECRET        the same value set as SYNC_SECRET on the deployment
+#
+# Note: GitHub disables scheduled workflows in a repository that has seen no
+# activity for 60 days. Re-enable from the Actions tab if that ever happens.
+
+on:
+  schedule:
+    # Nightly full sync — 03:00 Asia/Jerusalem (winter).
+    - cron: '0 1 * * *'
+    # Intraday delta syncs — 07:00 / 11:00 / 15:00 / 19:00 Asia/Jerusalem.
+    - cron: '0 5,9,13,17 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Sync mode'
+        type: choice
+        options: [full, deltas]
+        default: full
+      chain:
+        description: 'Chain to sync'
+        type: choice
+        options: [all, osher_ad, rami_levy, yohananof, tiv_taam]
+        default: all
+      force:
+        description: 'Re-download even if the source file is unchanged (full only)'
+        type: boolean
+        default: false
+
+# A long full sync must never overlap the next scheduled run.
+concurrency:
+  group: catalog-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      # One chain at a time: mirrors the previous sequential behaviour and keeps
+      # the number of concurrent Atlas connections low on the free tier.
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        chain: [osher_ad, rami_levy, yohananof, tiv_taam]
+    steps:
+      - name: Sync ${{ matrix.chain }}
+        if: >-
+          ${{ github.event_name != 'workflow_dispatch'
+              || inputs.chain == 'all'
+              || inputs.chain == matrix.chain }}
+        env:
+          # workflow_dispatch → the chosen mode; scheduled → nightly cron is the
+          # full sync, the intraday cron is deltas.
+          MODE: >-
+            ${{ github.event_name == 'workflow_dispatch' && inputs.mode
+                || (github.event.schedule == '0 1 * * *' && 'full' || 'deltas') }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
+          CHAIN: ${{ matrix.chain }}
+          API_BASE: ${{ secrets.CATALOG_API_BASE }}
+          SYNC_SECRET: ${{ secrets.SYNC_SECRET }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${API_BASE}" ] || [ -z "${SYNC_SECRET}" ]; then
+            echo "::error::CATALOG_API_BASE and SYNC_SECRET must be set as repository secrets."
+            exit 1
+          fi
+
+          url="${API_BASE%/}/api/sync/${MODE}?chain=${CHAIN}"
+          if [ "${MODE}" = "full" ] && [ "${FORCE}" = "true" ]; then
+            url="${url}&force=1"
+          fi
+          echo "POST /api/sync/${MODE}?chain=${CHAIN}"
+
+          # The sync endpoint runs to completion before responding, so the read
+          # timeout is generous. Retry only transient failures (network drop,
+          # 5xx); a 4xx means bad config and retrying cannot help.
+          for attempt in 1 2 3; do
+            status=$(curl -sS -X POST \
+              --max-time 600 \
+              -H "x-sync-secret: ${SYNC_SECRET}" \
+              -o response.json -w '%{http_code}' \
+              "${url}") && curl_rc=0 || curl_rc=$?
+
+            if [ "${curl_rc}" -eq 0 ] && [ "${status}" -ge 200 ] && [ "${status}" -lt 300 ]; then
+              echo "${CHAIN}: ${MODE} sync ok (HTTP ${status})"
+              head -c 2000 response.json; echo
+              exit 0
+            fi
+
+            if [ "${curl_rc}" -eq 0 ] && [ "${status}" -ge 400 ] && [ "${status}" -lt 500 ]; then
+              echo "::error::${CHAIN}: ${MODE} sync rejected (HTTP ${status}) — check SYNC_SECRET / CATALOG_API_BASE."
+              head -c 2000 response.json; echo
+              exit 1
+            fi
+
+            echo "attempt ${attempt} failed (curl rc=${curl_rc}, HTTP ${status:-none})"
+            [ -s response.json ] && { head -c 1000 response.json; echo; }
+            [ "${attempt}" -lt 3 ] && sleep $((attempt * 30))
+          done
+
+          echo "::error::${CHAIN}: ${MODE} sync failed after 3 attempts."
+          exit 1
