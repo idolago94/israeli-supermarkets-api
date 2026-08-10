@@ -1,4 +1,4 @@
-# catalog-api
+# israeli-supermarkets-api
 
 MongoDB-backed price-comparison catalog for Israeli supermarket chains,
 deployed as **Vercel serverless functions** and scheduled by **GitHub Actions

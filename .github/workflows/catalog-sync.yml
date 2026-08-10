@@ -17,7 +17,7 @@ name: catalog sync
 # run lands one hour later locally — harmless for a catalog refresh.
 #
 # Required repository secrets — Settings → Secrets and variables → Actions:
-#   CATALOG_API_BASE   e.g. https://catalog-api.vercel.app  (no trailing slash)
+#   CATALOG_API_BASE   e.g. https://israeli-supermarkets-api.vercel.app  (no trailing slash)
 #   SYNC_SECRET        the same value set as SYNC_SECRET on the deployment
 #
 # Note: GitHub disables scheduled workflows in a repository that has seen no

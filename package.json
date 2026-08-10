@@ -1,5 +1,5 @@
 {
-  "name": "catalog-api",
+  "name": "israeli-supermarkets-api",
   "version": "1.0.0",
   "private": true,
   "description": "Price-comparison catalog API — MongoDB-backed catalog + Cerberus price-sync, deployed on Vercel and scheduled by GitHub Actions cron.",

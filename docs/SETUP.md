@@ -10,7 +10,7 @@
 GitHub Actions (cron)                           ← המתזמן: מתי לסנכרן
    │  POST /api/sync/{full|deltas}?chain=…  (x-sync-secret)
    ▼
-catalog-api (Vercel)                            ← השירות: סנכרון + שליפה
+השירות הזה (Vercel)                             ← סנכרון + שליפה
    │  scrape Cerberus → parse → upsert / read
    ▼
 MongoDB Atlas                                   ← האחסון: products, syncState
@@ -65,7 +65,7 @@ Expo app                                        ← הצרכן: חיפוש וה�
 
    ליצירת מחרוזת אקראית: `openssl rand -hex 32`.
 3. פרוס (`vercel --prod`, או פשוט push ל-`main` אחרי הייבוא). שמור את כתובת
-   ה-production, למשל `https://catalog-api.vercel.app` — נזדקק לה בשלבים 3 ו-4.
+   ה-production, למשל `https://israeli-supermarkets-api.vercel.app` — נזדקק לה בשלבים 3 ו-4.
 
 הגדרות ה-`maxDuration`/memory לפונקציות הסנכרון כבר מוגדרות ב-`vercel.json`.
 
@@ -113,7 +113,7 @@ Expo app                                        ← הצרכן: חיפוש וה�
 בריפו של האפליקציה, הוסף ל-`.env`:
 
 ```
-EXPO_PUBLIC_CATALOG_API_BASE=https://catalog-api.vercel.app
+EXPO_PUBLIC_CATALOG_API_BASE=https://israeli-supermarkets-api.vercel.app
 EXPO_PUBLIC_CATALOG_API_KEY=<אותו-ערך-כמו-CATALOG_API_KEY-ב-Vercel>
 ```
 
@@ -130,7 +130,7 @@ EXPO_PUBLIC_CATALOG_API_KEY=<אותו-ערך-כמו-CATALOG_API_KEY-ב-Vercel>
 ```bash
 # כל הרשתות בבת אחת:
 curl -X POST -H "x-sync-secret: <SYNC_SECRET>" \
-  "https://catalog-api.vercel.app/api/sync/full"
+  "https://israeli-supermarkets-api.vercel.app/api/sync/full"
 ```
 
 בדיקות שפיות:
@@ -138,10 +138,10 @@ curl -X POST -H "x-sync-secret: <SYNC_SECRET>" \
 ```bash
 # קריאה כמו שהאפליקציה עושה (צריך להחזיר מוצרים):
 curl -H "x-api-key: <CATALOG_API_KEY>" \
-  "https://catalog-api.vercel.app/api/products/search?q=חלב"
+  "https://israeli-supermarkets-api.vercel.app/api/products/search?q=חלב"
 
 # בלי מפתח → 401:
-curl -i "https://catalog-api.vercel.app/api/products/search?q=חלב"
+curl -i "https://israeli-supermarkets-api.vercel.app/api/products/search?q=חלב"
 ```
 
 באפליקציה: הקלד שם מוצר במודל "הוסף פריט" — אמורות להופיע הצעות עם מחירים.
@@ -153,7 +153,7 @@ curl -i "https://catalog-api.vercel.app/api/products/search?q=חלב"
 לצד ה-API, השירות מגיש מסך ניהול סטטי בכתובת **`/admin.html`**:
 
 ```
-https://catalog-api.vercel.app/admin.html
+https://israeli-supermarkets-api.vercel.app/admin.html
 ```
 
 המסך מציג את **כל** המוצרים בקטלוג עם **כל** המידע שנשמר (ברקוד, שם, מותג,
