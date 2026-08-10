@@ -1,0 +1,1 @@
+# israeli-supermarkets-api
