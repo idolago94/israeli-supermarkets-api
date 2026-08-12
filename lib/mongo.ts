@@ -53,6 +53,9 @@ export interface ChainPrice {
   unitOfMeasurePrice?: number;
   /** Source AllowDiscount — whether the chain allows discounts on this item. */
   allowDiscount?: boolean;
+  /** True when this chain's branches don't all sell the item at `price` — it's
+   *  the cheapest of the per-branch prices, not a chain-wide flat price. */
+  priceVaries?: boolean;
   updatedAt: Date;
 }
 
@@ -103,12 +106,29 @@ export interface ProductDoc {
 export interface SyncStateDoc {
   /** chainId — also the document _id. */
   _id: string;
-  lastFullFile?: string;
-  lastFullSize?: string;
-  lastFullModified?: string;
+  /** Combined `storeId:file:size:modified` signature (one segment per branch,
+   *  sorted) from the last full sync's HEAD checks. Lets a full sync skip
+   *  downloading every branch's file again when nothing has changed anywhere. */
+  lastFullSignature?: string;
   lastDeltaFile?: string;
   lastDeltaTimestamp?: string;
   updatedAt?: Date;
+}
+
+/** A chain's physical branch, as published in its daily Stores file. */
+export interface StoreDoc {
+  /** `${chainId}:${storeId}` — unique across chains. */
+  _id: string;
+  chainId: string;
+  chainName: string;
+  storeId: string;
+  subChainId?: string;
+  name: string;
+  address?: string;
+  city?: string;
+  zipCode?: string;
+  storeType?: string;
+  updatedAt: Date;
 }
 
 export async function getDb(): Promise<Db> {
@@ -126,6 +146,10 @@ export async function syncState(): Promise<Collection<SyncStateDoc>> {
   return (await getDb()).collection<SyncStateDoc>('syncState');
 }
 
+export async function stores(): Promise<Collection<StoreDoc>> {
+  return (await getDb()).collection<StoreDoc>('stores');
+}
+
 // Chains whose prices we index on for the catalog's per-chain sort. Kept in
 // sync with the CHAINS list in lib/sync.ts.
 const INDEXED_CHAINS = ['osher_ad', 'rami_levy', 'yohananof', 'tiv_taam'];
@@ -138,7 +162,9 @@ const INDEXED_CHAINS = ['osher_ad', 'rami_levy', 'yohananof', 'tiv_taam'];
 async function ensureIndexes(db: Db): Promise<void> {
   if (cache.indexed) return;
   const col = db.collection<ProductDoc>('products');
+  const storesCol = db.collection<StoreDoc>('stores');
   await Promise.all([
+    storesCol.createIndex({ chainId: 1 }),
     // Prefix search + default catalog ordering.
     col.createIndex({ nameLower: 1 }),
     // Word-prefix autocomplete (array-contains equivalent).

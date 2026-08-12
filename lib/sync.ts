@@ -1,6 +1,7 @@
 import type { AnyBulkWriteOperation } from 'mongodb';
-import { products, syncState, ProductDoc, SyncStateDoc } from './mongo';
+import { products, stores, syncState, ProductDoc, StoreDoc, SyncStateDoc } from './mongo';
 import { ParsedItem, parsePriceItemsXml, generateKeywords } from './parse';
+import { ParsedStore, parseStoresXml } from './stores';
 import {
   ChainConfig,
   cerberusLogin,
@@ -8,6 +9,7 @@ import {
   pickLatestFile,
   filterByStore,
   fileTimestamp,
+  storeIdFromFileName,
   headFileMeta,
   downloadFile,
 } from './cerberus';
@@ -28,6 +30,82 @@ export function findChain(id: string): ChainConfig | undefined {
 }
 
 const MAX_ITEMS_PER_CHAIN = 25000;
+
+// A full sync's branch downloads run with bounded concurrency instead of one
+// giant Promise.all — chains like rami_levy publish ~100 branch files, and
+// unbounded parallel fetches would both hammer the portal and risk the
+// function's memory ceiling holding that many responses at once.
+const FULL_SYNC_CONCURRENCY = 6;
+
+/** items extended with a flag noting cross-branch price disagreement. */
+interface AggregatedItem extends ParsedItem {
+  priceVaries?: boolean;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+/**
+ * Groups a chain's PriceFull (or Price) file listing by branch — each chain
+ * publishes one file per store, named "...-<subChainId>-<storeId>-<ts>.gz" —
+ * and keeps only the latest file per branch. `storeId` (ChainConfig) still
+ * narrows to a single configured branch first, same as before this chain
+ * published per-branch prices at all.
+ */
+function latestFilePerStore(
+  files: string[],
+  storeId?: string,
+): { storeId: string; file: string }[] {
+  const filtered = filterByStore(files, storeId);
+  const byStore = new Map<string, string[]>();
+  for (const f of filtered) {
+    const id = storeIdFromFileName(f) ?? '';
+    byStore.set(id, [...(byStore.get(id) ?? []), f]);
+  }
+  return [...byStore.entries()].map(([id, group]) => ({
+    storeId: id,
+    file: [...group].sort((a, b) => fileTimestamp(b).localeCompare(fileTimestamp(a)))[0],
+  }));
+}
+
+/**
+ * Merges each branch's parsed items into one row per barcode: `price` is the
+ * cheapest of the branches that carry the item, and `priceVaries` flags items
+ * whose branches don't all agree on that price.
+ */
+function mergeItemsAcrossStores(perStoreItems: ParsedItem[][]): AggregatedItem[] {
+  const byCode = new Map<string, ParsedItem[]>();
+  for (const items of perStoreItems) {
+    for (const item of items) {
+      const arr = byCode.get(item.code);
+      if (arr) arr.push(item);
+      else byCode.set(item.code, [item]);
+    }
+  }
+
+  const merged: AggregatedItem[] = [];
+  for (const items of byCode.values()) {
+    const cheapest = items.reduce((best, cur) => (cur.price < best.price ? cur : best));
+    const priceVaries = items.some((it) => it.price !== cheapest.price);
+    merged.push({ ...cheapest, priceVaries });
+  }
+  return merged;
+}
 
 // ─── syncState (per chain) ────────────────────────────────────────────────────
 
@@ -54,7 +132,7 @@ async function setSyncState(
 // keywords; per-chain price lives under prices.<chainId> so each chain only
 // touches its own sub-field (merge semantics preserved).
 
-async function writeChainPrices(chain: ChainConfig, items: ParsedItem[]): Promise<void> {
+async function writeChainPrices(chain: ChainConfig, items: AggregatedItem[]): Promise<void> {
   if (!items.length) return;
   const col = await products();
   const now = new Date();
@@ -71,6 +149,7 @@ async function writeChainPrices(chain: ChainConfig, items: ParsedItem[]): Promis
       price: item.price,
       ...(item.unitOfMeasurePrice != null ? { unitOfMeasurePrice: item.unitOfMeasurePrice } : {}),
       ...(item.allowDiscount != null ? { allowDiscount: item.allowDiscount } : {}),
+      ...(item.priceVaries != null ? { priceVaries: item.priceVaries } : {}),
       updatedAt: now,
     };
 
@@ -185,47 +264,52 @@ export async function syncChainFull(
 ): Promise<unknown> {
   const cookie = await cerberusLogin(chain.username);
   const files = await cerberusListFiles(cookie, 'PriceFull');
-  const file = pickLatestFile(files, chain.storeId);
-  if (!file) return { chain: chain.id, note: 'no PriceFull file found' };
+  const perStore = latestFilePerStore(files, chain.storeId);
+  if (!perStore.length) return { chain: chain.id, note: 'no PriceFull file found' };
 
   const state = await getSyncState(chain.id);
-  const meta = await headFileMeta(cookie, file);
 
-  // Skip the (potentially tens-of-MB) download entirely when the chain hasn't
-  // republished since the last successful run. Callers can force a re-download
+  // HEAD every selected branch file — cheap relative to downloading them —
+  // and build one signature for the whole chain. Skip the (potentially
+  // tens-of-MB, times ~dozens of branches) download entirely when nothing has
+  // changed since the last successful run. Callers can force a re-download
   // (e.g. to backfill after a parsing bug fix) via opts.skipUnchangedCheck.
-  const unchanged =
-    !opts.skipUnchangedCheck &&
-    !!state &&
-    state.lastFullFile === file &&
-    !!meta &&
-    state.lastFullSize === meta.size &&
-    state.lastFullModified === meta.modified;
+  const metas = await mapWithConcurrency(perStore, FULL_SYNC_CONCURRENCY, async ({ storeId, file }) => {
+    const meta = await headFileMeta(cookie, file);
+    return { storeId, file, size: meta?.size ?? '', modified: meta?.modified ?? '' };
+  });
+  const signature = metas
+    .slice()
+    .sort((a, b) => a.storeId.localeCompare(b.storeId))
+    .map((m) => `${m.storeId}:${m.file}:${m.size}:${m.modified}`)
+    .join('|');
 
+  const unchanged = !opts.skipUnchangedCheck && !!state && state.lastFullSignature === signature;
   if (unchanged) {
-    return { chain: chain.id, file, skipped: true, reason: 'unchanged (HEAD check)' };
+    return { chain: chain.id, stores: perStore.length, skipped: true, reason: 'unchanged (HEAD check)' };
   }
 
-  const xml = await downloadFile(cookie, file);
-  const items = parsePriceItemsXml(xml, MAX_ITEMS_PER_CHAIN);
+  const perStoreItems = await mapWithConcurrency(perStore, FULL_SYNC_CONCURRENCY, async ({ file }) => {
+    const xml = await downloadFile(cookie, file);
+    return parsePriceItemsXml(xml, MAX_ITEMS_PER_CHAIN);
+  });
+  const items = mergeItemsAcrossStores(perStoreItems);
   await writeChainPrices(chain, items);
 
   // A fresh full snapshot supersedes older delta files, so fast-forward the
-  // delta cursor to at least this file's timestamp.
-  const fullTimestamp = fileTimestamp(file);
+  // delta cursor to at least the newest branch file's timestamp.
+  const fullTimestamp = perStore.reduce(
+    (max, { file }) => (fileTimestamp(file) > max ? fileTimestamp(file) : max),
+    '',
+  );
   const lastDeltaTimestamp =
     state?.lastDeltaTimestamp && state.lastDeltaTimestamp > fullTimestamp
       ? state.lastDeltaTimestamp
       : fullTimestamp;
 
-  await setSyncState(chain.id, {
-    lastFullFile: file,
-    lastFullSize: meta?.size ?? '',
-    lastFullModified: meta?.modified ?? '',
-    lastDeltaTimestamp,
-  });
+  await setSyncState(chain.id, { lastFullSignature: signature, lastDeltaTimestamp });
 
-  return { chain: chain.id, file, items: items.length };
+  return { chain: chain.id, stores: perStore.length, items: items.length };
 }
 
 // ─── Delta sync (intraday) ─────────────────────────────────────────────────────
@@ -268,4 +352,50 @@ export async function syncChainDeltas(chain: ChainConfig): Promise<unknown> {
   }
 
   return { chain: chain.id, filesProcessed: newFiles.length, items: itemsTotal };
+}
+
+// ─── Stores (branches) sync ────────────────────────────────────────────────────
+
+async function writeChainStores(chain: ChainConfig, list: ParsedStore[]): Promise<void> {
+  if (!list.length) return;
+  const col = await stores();
+  const now = new Date();
+
+  const ops: AnyBulkWriteOperation<StoreDoc>[] = list.map((s) => ({
+    updateOne: {
+      filter: { _id: `${chain.id}:${s.storeId}` },
+      update: {
+        $set: {
+          chainId: chain.id,
+          chainName: chain.nameHe,
+          storeId: s.storeId,
+          ...(s.subChainId ? { subChainId: s.subChainId } : {}),
+          name: s.name,
+          ...(s.address ? { address: s.address } : {}),
+          ...(s.city ? { city: s.city } : {}),
+          ...(s.zipCode ? { zipCode: s.zipCode } : {}),
+          ...(s.storeType ? { storeType: s.storeType } : {}),
+          updatedAt: now,
+        },
+      },
+      upsert: true,
+    },
+  }));
+
+  await col.bulkWrite(ops, { ordered: false });
+}
+
+/** Refreshes the `stores` collection from the chain's daily Stores file — one
+ *  small file listing every branch, unlike the per-branch PriceFull fan-out. */
+export async function syncChainStores(chain: ChainConfig): Promise<unknown> {
+  const cookie = await cerberusLogin(chain.username);
+  const files = await cerberusListFiles(cookie, 'Stores');
+  const file = pickLatestFile(files);
+  if (!file) return { chain: chain.id, note: 'no Stores file found' };
+
+  const xml = await downloadFile(cookie, file);
+  const list = parseStoresXml(xml);
+  await writeChainStores(chain, list);
+
+  return { chain: chain.id, file, stores: list.length };
 }

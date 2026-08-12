@@ -50,6 +50,7 @@ Firebase, in the app repo.
 | `GET /api/departments` | `x-api-key` | Distinct department names across the catalog (admin dropdown + app grouping). |
 | `GET/POST /api/sync/full?chain=&force=` | `x-sync-secret` | Full PriceFull sync (one chain, or all). Triggered by the scheduler workflow. |
 | `GET/POST /api/sync/deltas?chain=` | `x-sync-secret` | Intraday delta sync. Triggered by the scheduler workflow. |
+| `GET/POST /api/sync/stores?chain=` | `x-sync-secret` | Refreshes the `stores` collection (branches) from each chain's daily Stores file. Not yet on the scheduler. |
 
 Static page: **`/admin.html`** — an RTL admin screen (in `public/`) that lists
 every product with all of its info, lets you assign each product to **multiple
@@ -74,10 +75,36 @@ Each product document carries everything the parser extracts from the Cerberus
 | `measure.unitOfMeasure` | `UnitOfMeasure` | Unit of `quantity`. |
 | `measure.qtyInPackage` | `QtyInPackage` | Units per package. |
 | `measure.isWeighted` | `bIsWeighted` | Sold by weight (deli/produce). |
-| `prices.<chain>.price` | `ItemPrice` | Shelf price, per chain. |
-| `prices.<chain>.unitOfMeasurePrice` | `UnitOfMeasurePrice` | Price per unit of measure (₪/ליטר). |
-| `prices.<chain>.allowDiscount` | `AllowDiscount` | Whether the chain allows discounts. |
+| `prices.<chain>.price` | `ItemPrice` | Cheapest shelf price across the chain's branches (see [Branches](#branches--per-branch-prices) below). |
+| `prices.<chain>.unitOfMeasurePrice` | `UnitOfMeasurePrice` | Price per unit of measure (₪/ליטר), from the branch that has the cheapest price. |
+| `prices.<chain>.allowDiscount` | `AllowDiscount` | Whether the chain allows discounts, from the branch that has the cheapest price. |
+| `prices.<chain>.priceVaries` | derived | `true` when the chain's branches don't all sell the item at `price` — i.e. it's the cheapest of several, not a flat chain-wide price. |
 | `departments[]` | **manual** | One or more categories, set via the admin screen / PATCH. Not in the source, so the sync never overwrites them — they survive every re-sync. The legacy single `department` field is still read for backward compatibility until a product is re-saved. |
+
+## Branches / per-branch prices
+
+Each chain publishes prices **per physical branch**, not one chain-wide file —
+e.g. `rami_levy` alone has ~100 separate branch files. A full sync now
+downloads every branch's latest `PriceFull` file (bounded concurrency,
+`FULL_SYNC_CONCURRENCY` in `lib/sync.ts`) and merges them per barcode: the
+catalog's `prices.<chain>.price` is the **cheapest** of the branches that
+carry the item, and `priceVaries` flags items where branches disagree on
+price. The chain's branch directory itself (name, address, city) is kept in a
+separate `stores` collection, refreshed by `/api/sync/stores` from each
+chain's daily Stores file — small and independent of the price fan-out.
+
+**Known limits of this first pass:**
+- Only the full sync aggregates across branches. The intraday delta sync
+  (`/api/sync/deltas`) still applies whichever branch's delta file happens to
+  land, last-file-wins — it doesn't yet re-run the cross-branch min/variance
+  logic.
+- The "unchanged, skip this sync" check now HEADs every branch file and skips
+  only when *all* of them are unchanged; when even one branch republishes, the
+  full sync re-downloads and re-parses every branch (no cheaper way to
+  recompute cross-branch price differences without caching per-branch data).
+- `stores` isn't wired into the scheduler workflow yet — run
+  `/api/sync/stores` manually (or add it to `.github/workflows/catalog-sync.yml`)
+  after deploying this.
 
 ## Environment variables
 
@@ -187,7 +214,10 @@ lists first for that chain.
 - A call to `/api/sync/{mode}` with no `chain` runs all chains sequentially
   within one invocation (`maxDuration` 300s), which risks that ceiling as the
   files grow. The scheduler therefore always calls per-chain
-  (`/api/sync/{mode}?chain=<id>`), so each invocation is one download + parse
-  and a failing chain does not take the others down with it.
+  (`/api/sync/{mode}?chain=<id>`), so a failing chain does not take the others
+  down with it. `/api/sync/full?chain=<id>` is now itself a fan-out — one
+  download + parse per branch of that chain (up to ~100 for `rami_levy`) — so
+  it's the one most exposed to the 300s ceiling; `/api/sync/deltas` and
+  `/api/sync/stores` stay cheap (one small file per chain).
 - MongoDB client connections are cached across warm invocations (`lib/mongo.ts`)
   to stay within the Atlas M0 connection limit.
