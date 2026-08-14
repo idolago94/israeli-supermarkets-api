@@ -132,12 +132,21 @@ async function setSyncState(
 // keywords; per-chain price lives under prices.<chainId> so each chain only
 // touches its own sub-field (merge semantics preserved).
 
-async function writeChainPrices(chain: ChainConfig, items: AggregatedItem[]): Promise<void> {
-  if (!items.length) return;
-  const col = await products();
+/**
+ * Builds the bulkWrite ops shared by the full sync (unconditional overwrite —
+ * `items` already carries the true cross-branch minimum) and the delta sync
+ * (conditional — only replace the price when the new one actually undercuts
+ * what's stored, since a single branch's delta can't tell whether it's still
+ * the cheapest). `overwrite: false` is what makes it conditional.
+ */
+function buildPriceUpdateOps(
+  chain: ChainConfig,
+  items: (AggregatedItem | ParsedItem)[],
+  overwrite: boolean,
+): AnyBulkWriteOperation<ProductDoc>[] {
   const now = new Date();
 
-  const ops: AnyBulkWriteOperation<ProductDoc>[] = items.map((item) => {
+  return items.map((item) => {
     const keywords = generateKeywords(item.name);
 
     // This chain's price entry. It now carries `name` — the product name as this
@@ -149,7 +158,7 @@ async function writeChainPrices(chain: ChainConfig, items: AggregatedItem[]): Pr
       price: item.price,
       ...(item.unitOfMeasurePrice != null ? { unitOfMeasurePrice: item.unitOfMeasurePrice } : {}),
       ...(item.allowDiscount != null ? { allowDiscount: item.allowDiscount } : {}),
-      ...(item.priceVaries != null ? { priceVaries: item.priceVaries } : {}),
+      ...('priceVaries' in item && item.priceVaries != null ? { priceVaries: item.priceVaries } : {}),
       updatedAt: now,
     };
 
@@ -163,12 +172,28 @@ async function writeChainPrices(chain: ChainConfig, items: AggregatedItem[]): Pr
     if (item.qtyInPackage) measure.qtyInPackage = item.qtyInPackage;
     if (item.isWeighted != null) measure.isWeighted = item.isWeighted;
 
+    // Full sync already computed the true cross-branch minimum, so it always
+    // wins outright. A delta only knows this one branch's new price, so it
+    // replaces the stored entry only when strictly cheaper — it can lower the
+    // chain's displayed price but never raise it (that needs the next full
+    // sync, which sees every branch at once and can tell the previously
+    // cheapest branch actually got more expensive).
+    const priceValue = overwrite
+      ? { $literal: priceEntry }
+      : {
+          $cond: [
+            { $lt: [{ $literal: item.price }, { $ifNull: [`$prices.${chain.id}.price`, Infinity] }] },
+            { $literal: priceEntry },
+            `$prices.${chain.id}`,
+          ],
+        };
+
     // First pipeline stage: this chain's fields. Source-derived constants are
     // wrapped in $literal so a value starting with '$' is never parsed as a
     // field path. keywords accumulate across chains ($setUnion mirrors the old
     // $addToSet, preserving cross-chain search recall).
     const setStage: Record<string, unknown> = {
-      [`prices.${chain.id}`]: { $literal: priceEntry },
+      [`prices.${chain.id}`]: priceValue,
       updatedAt: { $literal: now },
     };
     if (item.brand) setStage.brand = { $literal: item.brand };
@@ -251,9 +276,19 @@ async function writeChainPrices(chain: ChainConfig, items: AggregatedItem[]): Pr
       },
     };
   });
+}
 
+async function writeChainPrices(chain: ChainConfig, items: AggregatedItem[]): Promise<void> {
+  if (!items.length) return;
+  const col = await products();
   // ordered:false so one malformed item can't abort the whole batch.
-  await col.bulkWrite(ops, { ordered: false });
+  await col.bulkWrite(buildPriceUpdateOps(chain, items, true), { ordered: false });
+}
+
+async function writeChainPricesIfCheaper(chain: ChainConfig, items: ParsedItem[]): Promise<void> {
+  if (!items.length) return;
+  const col = await products();
+  await col.bulkWrite(buildPriceUpdateOps(chain, items, false), { ordered: false });
 }
 
 // ─── Full sync (nightly) ──────────────────────────────────────────────────────
@@ -296,23 +331,32 @@ export async function syncChainFull(
   const items = mergeItemsAcrossStores(perStoreItems);
   await writeChainPrices(chain, items);
 
-  // A fresh full snapshot supersedes older delta files, so fast-forward the
-  // delta cursor to at least the newest branch file's timestamp.
-  const fullTimestamp = perStore.reduce(
-    (max, { file }) => (fileTimestamp(file) > max ? fileTimestamp(file) : max),
-    '',
-  );
-  const lastDeltaTimestamp =
-    state?.lastDeltaTimestamp && state.lastDeltaTimestamp > fullTimestamp
-      ? state.lastDeltaTimestamp
-      : fullTimestamp;
+  // A fresh full snapshot supersedes older delta files for the branches it
+  // covered, so fast-forward each of those branches' delta cursor to at least
+  // its own file's timestamp (branches not in this sync, e.g. a configured
+  // chain.storeId override, keep whatever cursor they already had).
+  const lastDeltaTimestamps = { ...(state?.lastDeltaTimestamps ?? {}) };
+  for (const { storeId, file } of perStore) {
+    const ts = fileTimestamp(file);
+    if (!lastDeltaTimestamps[storeId] || ts > lastDeltaTimestamps[storeId]) {
+      lastDeltaTimestamps[storeId] = ts;
+    }
+  }
 
-  await setSyncState(chain.id, { lastFullSignature: signature, lastDeltaTimestamp });
+  await setSyncState(chain.id, { lastFullSignature: signature, lastDeltaTimestamps });
 
   return { chain: chain.id, stores: perStore.length, items: items.length };
 }
 
 // ─── Delta sync (intraday) ─────────────────────────────────────────────────────
+//
+// Delta files are published per branch, same as PriceFull, so this checks
+// each branch's cursor separately and only downloads branches that actually
+// republished. A branch's new price only overwrites the catalog when it
+// undercuts what's stored (writeChainPricesIfCheaper) — a delta can lower a
+// chain's displayed price but can't detect the previously-cheapest branch
+// raising its price, since it never sees the other branches. That's a known
+// gap, corrected by the next full sync (see README "Branches").
 
 export async function syncChainDeltas(chain: ChainConfig): Promise<unknown> {
   const cookie = await cerberusLogin(chain.username);
@@ -326,32 +370,44 @@ export async function syncChainDeltas(chain: ChainConfig): Promise<unknown> {
   );
 
   const state = await getSyncState(chain.id);
-  const lastTimestamp = state?.lastDeltaTimestamp ?? '';
+  const lastByStore = state?.lastDeltaTimestamps ?? {};
 
-  const newFiles = deltaFiles
-    .filter((f) => fileTimestamp(f) > lastTimestamp)
-    .sort((a, b) => fileTimestamp(a).localeCompare(fileTimestamp(b)));
-
-  if (!newFiles.length) {
-    return { chain: chain.id, filesProcessed: 0, reason: 'no new delta files' };
+  // Group files newer than that branch's cursor, per branch.
+  const newByStore = new Map<string, string[]>();
+  for (const f of deltaFiles) {
+    const storeId = storeIdFromFileName(f) ?? '';
+    if (fileTimestamp(f) > (lastByStore[storeId] ?? '')) {
+      newByStore.set(storeId, [...(newByStore.get(storeId) ?? []), f]);
+    }
   }
 
+  if (!newByStore.size) {
+    return { chain: chain.id, branchesChanged: 0, filesProcessed: 0, reason: 'no new delta files' };
+  }
+
+  const lastDeltaTimestamps = { ...lastByStore };
+  let filesProcessed = 0;
   let itemsTotal = 0;
-  for (const file of newFiles) {
-    const xml = await downloadFile(cookie, file);
-    const items = parsePriceItemsXml(xml, MAX_ITEMS_PER_CHAIN);
-    await writeChainPrices(chain, items);
-    itemsTotal += items.length;
 
-    // Persisted after each file so a mid-batch crash resumes from the last
-    // applied delta instead of redoing it.
-    await setSyncState(chain.id, {
-      lastDeltaFile: file,
-      lastDeltaTimestamp: fileTimestamp(file),
-    });
+  for (const [storeId, files] of newByStore) {
+    // Oldest first: earlier files may cover different items than later ones,
+    // so every new file for the branch gets applied, not just the latest.
+    const ordered = [...files].sort((a, b) => fileTimestamp(a).localeCompare(fileTimestamp(b)));
+    for (const file of ordered) {
+      const xml = await downloadFile(cookie, file);
+      const items = parsePriceItemsXml(xml, MAX_ITEMS_PER_CHAIN);
+      await writeChainPricesIfCheaper(chain, items);
+      itemsTotal += items.length;
+      filesProcessed++;
+
+      // Persisted after each file so a mid-batch crash resumes from the last
+      // applied delta for that branch instead of redoing it.
+      lastDeltaTimestamps[storeId] = fileTimestamp(file);
+      await setSyncState(chain.id, { lastDeltaTimestamps });
+    }
   }
 
-  return { chain: chain.id, filesProcessed: newFiles.length, items: itemsTotal };
+  return { chain: chain.id, branchesChanged: newByStore.size, filesProcessed, items: itemsTotal };
 }
 
 // ─── Stores (branches) sync ────────────────────────────────────────────────────

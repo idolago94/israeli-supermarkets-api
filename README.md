@@ -50,7 +50,7 @@ Firebase, in the app repo.
 | `GET /api/departments` | `x-api-key` | Distinct department names across the catalog (admin dropdown + app grouping). |
 | `GET/POST /api/sync/full?chain=&force=` | `x-sync-secret` | Full PriceFull sync (one chain, or all). Triggered by the scheduler workflow. |
 | `GET/POST /api/sync/deltas?chain=` | `x-sync-secret` | Intraday delta sync. Triggered by the scheduler workflow. |
-| `GET/POST /api/sync/stores?chain=` | `x-sync-secret` | Refreshes the `stores` collection (branches) from each chain's daily Stores file. Not yet on the scheduler. |
+| `GET/POST /api/sync/stores?chain=` | `x-sync-secret` | Refreshes the `stores` collection (branches) from each chain's daily Stores file. Triggered nightly by the scheduler workflow. |
 
 Static page: **`/admin.html`** — an RTL admin screen (in `public/`) that lists
 every product with all of its info, lets you assign each product to **multiple
@@ -93,18 +93,33 @@ price. The chain's branch directory itself (name, address, city) is kept in a
 separate `stores` collection, refreshed by `/api/sync/stores` from each
 chain's daily Stores file — small and independent of the price fan-out.
 
-**Known limits of this first pass:**
-- Only the full sync aggregates across branches. The intraday delta sync
-  (`/api/sync/deltas`) still applies whichever branch's delta file happens to
-  land, last-file-wins — it doesn't yet re-run the cross-branch min/variance
-  logic.
-- The "unchanged, skip this sync" check now HEADs every branch file and skips
-  only when *all* of them are unchanged; when even one branch republishes, the
-  full sync re-downloads and re-parses every branch (no cheaper way to
-  recompute cross-branch price differences without caching per-branch data).
-- `stores` isn't wired into the scheduler workflow yet — run
-  `/api/sync/stores` manually (or add it to `.github/workflows/catalog-sync.yml`)
-  after deploying this.
+### Intraday deltas: branch-scoped, price-can-only-drop
+
+Delta files are published per branch too. `/api/sync/deltas` tracks each
+branch's own cursor (`syncState.lastDeltaTimestamps`, keyed by branch id) and
+only downloads branches that actually republished since their cursor. A
+branch's new price replaces `prices.<chain>.price` **only when it's cheaper**
+than what's already stored — a delta only ever sees one branch, so it can
+lower the chain's displayed price but can't tell whether the branch that used
+to be cheapest just raised its price (that needs to see every branch at once,
+which only the full sync does). Concretely: branch A at ₪10 is today's
+cheapest; a delta reports A now at ₪15; since ₪15 isn't cheaper than the
+stored ₪10, nothing changes — even though branch B, untouched at ₪12, is now
+the real cheapest. The catalog shows a stale ₪10 until the next full sync
+recomputes the true minimum across every branch. `priceVaries` is also only
+trustworthy as of the last full sync — a delta-driven price change doesn't
+recompute it.
+
+This was a deliberate simplification (no per-branch price cache — only the
+chain-level aggregate is stored) rather than a bug: fixing the blind spot
+would mean persisting every branch's price per item, not just the winning
+one, so a delta could recompute the true minimum without re-scanning branches
+that didn't change.
+
+The full sync's "unchanged, skip this sync" check HEADs every branch file and
+skips only when *all* of them are unchanged; when even one branch
+republishes, the full sync still re-downloads and re-parses every branch (for
+the same reason — no cached per-branch prices to recompute the minimum from).
 
 ## Environment variables
 
@@ -164,6 +179,7 @@ POSTs to `/api/sync/{mode}` once per chain, sequentially.
 
 | Run | Schedule (Asia/Jerusalem, winter) | Cron (UTC) | Action |
 |---|---|---|---|
+| Branch directory sync | nightly 02:30 | `30 0 * * *` | `POST /api/sync/stores?chain=<id>` |
 | Full sync | nightly 03:00 | `0 1 * * *` | `POST /api/sync/full?chain=<id>` |
 | Delta syncs | 07:00, 11:00, 15:00, 19:00 | `0 5,9,13,17 * * *` | `POST /api/sync/deltas?chain=<id>` |
 

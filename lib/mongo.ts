@@ -110,8 +110,11 @@ export interface SyncStateDoc {
    *  sorted) from the last full sync's HEAD checks. Lets a full sync skip
    *  downloading every branch's file again when nothing has changed anywhere. */
   lastFullSignature?: string;
-  lastDeltaFile?: string;
-  lastDeltaTimestamp?: string;
+  /** storeId -> timestamp of the last delta file processed for that branch.
+   *  Per-branch (not per-chain) because delta files are published per branch,
+   *  same as PriceFull — a delta run only needs to look at branches whose
+   *  cursor is behind what's listed. */
+  lastDeltaTimestamps?: Record<string, string>;
   updatedAt?: Date;
 }
 
