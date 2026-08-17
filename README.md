@@ -225,16 +225,16 @@ The download only covers the chain's default listed branch (no `storeId`
 filter) — it fetches whichever single store's `PriceFull` file the portal
 lists first for that chain.
 
-## Catalog v2 (Postgres/Supabase) — full sync only, in progress
+## Catalog v2 (Postgres/Supabase) — full sync + read API, in progress
 
 A relational rewrite of the catalog, running **in parallel** with v1 (Mongo)
 in this same repo — v1 keeps serving the app untouched; v2 is not wired to
-the scheduler or read API yet. It exists because v1's per-chain aggregate
-price (see "Branches" above) makes "cheapest across branches" a write-time
-computation that a delta sync can only get partially right. In v2 every
-(product, store) price is its own row, so "cheapest" is `MIN(price)` at read
-time — always correct, and a branch that didn't change never needs to be
-touched to keep it that way.
+the scheduler yet, and the app doesn't call it. It exists because v1's
+per-chain aggregate price (see "Branches" above) makes "cheapest across
+branches" a write-time computation that a delta sync can only get partially
+right. In v2 every (product, store) price is its own row, so "cheapest" is
+`MIN(price)` at read time — always correct, and a branch that didn't change
+never needs to be touched to keep it that way.
 
 **Schema** (`supabase/migrations/20260817000000_catalog_v2_schema.sql`):
 
@@ -258,11 +258,27 @@ run (not once per branch). Verified against live Cerberus data for osher_ad
 into a local Postgres instance: 24 branches → 9,861 products, 160,126 price
 rows, correctly skips the entire chain on a re-run with nothing changed.
 
+**Read API** (`x-api-key`, same `CATALOG_API_KEY` as v1):
+
+| Route | Purpose |
+|---|---|
+| `GET /api/v2/products?chain=&limit=&cursor=` | Paginated catalog. `chain` unset → alphabetical; `chain` set → only that chain's products, cheapest-in-chain first. Returns an aggregate per product (`cheapestPrice`/`priciestPrice`/`priceVaries`/`storeCount`) — not a full per-store array, which would be up to ~100 rows per product on a 30-product page. |
+| `GET /api/v2/products/search?q=&limit=&cursor=` | Same word-prefix keyword search as v1 (`keywords @>`, every token required), same aggregate shape as the browse endpoint. |
+| `GET /api/v2/products/:barcode` | The one place the full per-store breakdown lives — every branch that carries the barcode, with its own price, cheapest first. This is the actual point of the v2 schema, so it's a dedicated endpoint rather than bolted onto the list response. |
+
+No PATCH/admin endpoint yet — v2 has no editable fields of its own (departments aren't populated; see gaps below).
+
+**Display screen**: **`/catalog-v2.html`** (in `public/`) — read-only RTL page
+listing v2's catalog with search, a chain filter, and price-range chips;
+clicking a product expands its full per-branch breakdown (fetched from the
+detail endpoint on first expand). Same `x-api-key`-in-`localStorage` pattern
+as `/admin.html`, and reuses the same stored key.
+
 **Known gaps, deliberately out of scope for this pass:**
 - No delta/incremental sync yet — `syncChainFullV2` is the only v2 sync path.
-- No read API (`/api/v2/products/*` etc.) — only the write/sync side exists.
 - Not on the scheduler workflow, and no data has been migrated from v1's
-  MongoDB (departments assigned via the v1 admin screen don't carry over).
+  MongoDB (departments assigned via the v1 admin screen don't carry over —
+  v2's `departments` column exists in the schema but nothing populates it).
 - `DATABASE_URL` should be Supabase's **pooled** ("Transaction" mode, port
   6543) connection string — same reasoning as v1's cached `MongoClient`, a
   direct connection per invocation would exhaust Postgres' connection limit
