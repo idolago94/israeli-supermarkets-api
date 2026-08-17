@@ -2,6 +2,7 @@ import type { AnyBulkWriteOperation } from 'mongodb';
 import { products, stores, syncState, ProductDoc, StoreDoc, SyncStateDoc } from './mongo';
 import { ParsedItem, parsePriceItemsXml, generateKeywords } from './parse';
 import { ParsedStore, parseStoresXml } from './stores';
+import { mapWithConcurrency, latestFilePerStore } from './branches';
 import {
   ChainConfig,
   cerberusLogin,
@@ -40,47 +41,6 @@ const FULL_SYNC_CONCURRENCY = 6;
 /** items extended with a flag noting cross-branch price disagreement. */
 interface AggregatedItem extends ParsedItem {
   priceVaries?: boolean;
-}
-
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let next = 0;
-  async function worker(): Promise<void> {
-    for (;;) {
-      const i = next++;
-      if (i >= items.length) return;
-      results[i] = await fn(items[i]);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
-}
-
-/**
- * Groups a chain's PriceFull (or Price) file listing by branch — each chain
- * publishes one file per store, named "...-<subChainId>-<storeId>-<ts>.gz" —
- * and keeps only the latest file per branch. `storeId` (ChainConfig) still
- * narrows to a single configured branch first, same as before this chain
- * published per-branch prices at all.
- */
-function latestFilePerStore(
-  files: string[],
-  storeId?: string,
-): { storeId: string; file: string }[] {
-  const filtered = filterByStore(files, storeId);
-  const byStore = new Map<string, string[]>();
-  for (const f of filtered) {
-    const id = storeIdFromFileName(f) ?? '';
-    byStore.set(id, [...(byStore.get(id) ?? []), f]);
-  }
-  return [...byStore.entries()].map(([id, group]) => ({
-    storeId: id,
-    file: [...group].sort((a, b) => fileTimestamp(b).localeCompare(fileTimestamp(a)))[0],
-  }));
 }
 
 /**

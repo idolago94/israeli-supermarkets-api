@@ -225,6 +225,49 @@ The download only covers the chain's default listed branch (no `storeId`
 filter) — it fetches whichever single store's `PriceFull` file the portal
 lists first for that chain.
 
+## Catalog v2 (Postgres/Supabase) — full sync only, in progress
+
+A relational rewrite of the catalog, running **in parallel** with v1 (Mongo)
+in this same repo — v1 keeps serving the app untouched; v2 is not wired to
+the scheduler or read API yet. It exists because v1's per-chain aggregate
+price (see "Branches" above) makes "cheapest across branches" a write-time
+computation that a delta sync can only get partially right. In v2 every
+(product, store) price is its own row, so "cheapest" is `MIN(price)` at read
+time — always correct, and a branch that didn't change never needs to be
+touched to keep it that way.
+
+**Schema** (`supabase/migrations/20260817000000_catalog_v2_schema.sql`):
+
+| Table | Grain | Notes |
+|---|---|---|
+| `chains` | one row per chain | Kept in sync with the `CHAINS` config in `lib/sync.ts` (id/name/username) on every sync — that constant is still the source of truth for Cerberus login credentials. |
+| `stores` | one row per branch | `unique (chain_id, store_code)`. Carries `last_price_file`/`last_price_size`/`last_price_modified` — a HEAD-metadata proxy, not a content hash, so an unchanged branch can be skipped *without downloading it* (a real hash would need the download to compute, defeating the point). |
+| `products` | one row per barcode | Everything except price: brand, measure fields, `keywords[]` (union of word-prefix tokens across every store's name for the barcode), and manually-assigned `departments[]` (sync never writes this column). `name`/`name_lower` are the shortest of every linked `prices.item_name` — same `pickCanonicalName` rule as v1, recomputed after every sync. |
+| `prices` | one row per **(product, store)** | `primary key (product_id, store_id)`. Also carries `item_name` (that store's own name for the barcode — needed for the canonical-name/keyword computation above) and `unit_of_measure_price`/`allow_discount`. |
+
+**Sync** (`lib/syncV2.ts`, `POST /api/v2/sync/full?chain=&force=`, same
+`x-sync-secret` auth as v1): reuses v1's Cerberus fetching/parsing verbatim
+(`lib/cerberus.ts`, `lib/parse.ts`, `lib/stores.ts`, `lib/branches.ts`) — only
+the storage layer differs. Per chain: refresh `stores` from the daily Stores
+file, HEAD every branch's `PriceFull` file and diff against that branch's own
+saved signature, download+parse only the branches that changed, upsert
+`products`/`prices` for those branches, **delete** any of that branch's price
+rows for barcodes no longer in its file (unlike v1, nothing lingers forever),
+then recompute `name`/`name_lower`/`keywords` once per product touched in the
+run (not once per branch). Verified against live Cerberus data for osher_ad
+into a local Postgres instance: 24 branches → 9,861 products, 160,126 price
+rows, correctly skips the entire chain on a re-run with nothing changed.
+
+**Known gaps, deliberately out of scope for this pass:**
+- No delta/incremental sync yet — `syncChainFullV2` is the only v2 sync path.
+- No read API (`/api/v2/products/*` etc.) — only the write/sync side exists.
+- Not on the scheduler workflow, and no data has been migrated from v1's
+  MongoDB (departments assigned via the v1 admin screen don't carry over).
+- `DATABASE_URL` should be Supabase's **pooled** ("Transaction" mode, port
+  6543) connection string — same reasoning as v1's cached `MongoClient`, a
+  direct connection per invocation would exhaust Postgres' connection limit
+  under concurrent Vercel invocations.
+
 ## Notes & limits
 
 - A call to `/api/sync/{mode}` with no `chain` runs all chains sequentially

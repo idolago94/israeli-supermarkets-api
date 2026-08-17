@@ -3,6 +3,7 @@
   "outputDirectory": "public",
   "functions": {
     "api/sync/full.ts": { "maxDuration": 300, "memory": 1024 },
-    "api/sync/deltas.ts": { "maxDuration": 300, "memory": 1024 }
+    "api/sync/deltas.ts": { "maxDuration": 300, "memory": 1024 },
+    "api/v2/sync/full.ts": { "maxDuration": 300, "memory": 1024 }
   }
 }
