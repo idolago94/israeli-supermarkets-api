@@ -24,10 +24,26 @@ const missingIntermediate = readFileSync(
 );
 const cerberusDispatcher = new Agent({
   connect: { ca: [...rootCertificates, missingIntermediate] },
+  // The portal occasionally accepts a connection and then never sends a
+  // response (seen as undici's default 300s headersTimeout expiring) —
+  // fail fast instead of hanging a full sync for 5 minutes per stalled
+  // request. bodyTimeout is separate since a full PriceFull download can
+  // legitimately take longer than the time-to-first-byte.
+  headersTimeout: 20_000,
+  bodyTimeout: 60_000,
 });
 
+const CERBERUS_FETCH_RETRIES = 2;
+
 async function cerberusFetch(url: string, init: Record<string, unknown> = {}): Promise<Response> {
-  return fetch(url, { ...init, dispatcher: cerberusDispatcher } as any);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetch(url, { ...init, dispatcher: cerberusDispatcher } as any);
+    } catch (err) {
+      if (attempt >= CERBERUS_FETCH_RETRIES) throw err;
+      await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
+    }
+  }
 }
 
 export interface ChainConfig {
@@ -118,6 +134,16 @@ export function filterByStore(files: string[], storeId?: string): string[] {
   return filtered.length ? filtered : files;
 }
 
+/**
+ * Extracts the per-branch store id from a PriceFull/Price file name, e.g.
+ * "PriceFull7290103152017-001-010-20260812-080004.gz" -> "010". Every chain
+ * observed so far publishes one such file per branch; returns null for a
+ * name that doesn't carry a subchain+store segment.
+ */
+export function storeIdFromFileName(name: string): string | null {
+  return /^\D+\d+-\d{3}-(\d{3})-/.exec(name)?.[1] ?? null;
+}
+
 export function pickLatestFile(files: string[], storeId?: string): string | null {
   const pool = filterByStore(files, storeId);
   return (
@@ -151,10 +177,25 @@ export async function headFileMeta(
   }
 }
 
+/**
+ * Decode a decompressed file body to text. PriceFull/Price files are UTF-8,
+ * but the Stores file is published UTF-16LE (with BOM) by every chain seen so
+ * far \u2014 sniff the BOM instead of hardcoding one encoding per file type.
+ */
+function decodeXmlBuffer(buf: Buffer): string {
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
+    return buf.subarray(2).toString('utf16le');
+  }
+  if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff) {
+    return buf.subarray(2).swap16().toString('utf16le');
+  }
+  return buf.toString('utf8').replace(/^\uFEFF/, '');
+}
+
 export async function downloadFile(cookie: string, fname: string): Promise<string> {
   const res = await cerberusFetch(downloadUrl(fname), { headers: { cookie } });
   if (!res.ok) throw new Error(`download failed (${res.status}) for ${fname}`);
   const buf = Buffer.from(await res.arrayBuffer());
   const xmlBuf = fname.toLowerCase().endsWith('.gz') ? gunzipSync(buf) : buf;
-  return xmlBuf.toString('utf8').replace(/^\uFEFF/, '');
+  return decodeXmlBuffer(xmlBuf);
 }

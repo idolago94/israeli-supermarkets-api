@@ -5,6 +5,8 @@
 // Cloud Function so barcode normalization and keyword generation stay
 // byte-for-byte compatible with the data already produced.
 
+import { decodeEntities, tagValue } from './xml';
+
 export interface ParsedItem {
   code: string;
   name: string;
@@ -50,20 +52,6 @@ function parseBool(value: string): boolean | undefined {
 function parsePositive(value: string): number | undefined {
   const n = parseFloat(value);
   return isFinite(n) && n > 0 ? n : undefined;
-}
-
-function decodeEntities(value: string): string {
-  return value
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&');
-}
-
-function tagValue(block: string, tag: string): string {
-  const m = new RegExp(`<${tag}>([^<]*)</${tag}>`, 'i').exec(block);
-  return m ? decodeEntities(m[1]).trim() : '';
 }
 
 /**

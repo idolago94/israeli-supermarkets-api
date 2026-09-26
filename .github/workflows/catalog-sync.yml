@@ -7,10 +7,10 @@ name: catalog sync
 # drive the sync from the app's repo: the schedule now ships with the service
 # itself, runs on GitHub's cron, and needs no Firebase Blaze plan.
 #
-# Each run POSTs to the deployed service's `/api/sync/{full|deltas}` endpoint
-# once **per chain**, sequentially. Per-chain calls keep every invocation well
-# inside the platform's function time limit (a single `?chain=` sync is one
-# download + parse), and a chain that fails no longer hides the others.
+# Each run POSTs to the deployed service's `/api/sync/{full|deltas|stores}`
+# endpoint once **per chain**, sequentially. Per-chain calls keep every
+# invocation well inside the platform's function time limit, and a chain that
+# fails no longer hides the others.
 #
 # GitHub cron is UTC-only while the chains publish on Israel time, so the times
 # below are Israel *winter* time (UTC+2). During daylight saving (UTC+3) each
@@ -25,6 +25,9 @@ name: catalog sync
 
 on:
   schedule:
+    # Branch directory sync — 02:30 Asia/Jerusalem (winter), ahead of the full
+    # sync. One small file per chain, so it doesn't need its own time slot.
+    - cron: '30 0 * * *'
     # Nightly full sync — 03:00 Asia/Jerusalem (winter).
     - cron: '0 1 * * *'
     # Intraday delta syncs — 07:00 / 11:00 / 15:00 / 19:00 Asia/Jerusalem.
@@ -34,7 +37,7 @@ on:
       mode:
         description: 'Sync mode'
         type: choice
-        options: [full, deltas]
+        options: [full, deltas, stores]
         default: full
       chain:
         description: 'Chain to sync'
@@ -69,11 +72,12 @@ jobs:
               || inputs.chain == 'all'
               || inputs.chain == matrix.chain }}
         env:
-          # workflow_dispatch → the chosen mode; scheduled → nightly cron is the
-          # full sync, the intraday cron is deltas.
+          # workflow_dispatch → the chosen mode; scheduled → which cron fired
+          # picks the mode (branch directory / full / intraday deltas).
           MODE: >-
             ${{ github.event_name == 'workflow_dispatch' && inputs.mode
-                || (github.event.schedule == '0 1 * * *' && 'full' || 'deltas') }}
+                || (github.event.schedule == '30 0 * * *' && 'stores'
+                || (github.event.schedule == '0 1 * * *' && 'full' || 'deltas')) }}
           FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
           CHAIN: ${{ matrix.chain }}
           API_BASE: ${{ secrets.CATALOG_API_BASE }}

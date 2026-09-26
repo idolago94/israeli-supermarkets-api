@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>קטלוג v2 — תצוגת מחירים לפי סניף</title>
+  <style>
+    :root {
+      --bg: #f4f5f7;
+      --surface: #ffffff;
+      --border: #e2e5ea;
+      --text: #1a1d23;
+      --muted: #6b7280;
+      --primary: #2563eb;
+      --primary-dark: #1d4ed8;
+      --chip: #eef2ff;
+      --chip-text: #3730a3;
+      --warn-chip: #fff7ed;
+      --warn-chip-text: #9a3412;
+      --danger: #b91c1c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 18px;
+    }
+    header h1 { margin: 0 0 10px; font-size: 18px; }
+    header .sub { margin: -6px 0 10px; font-size: 12px; color: var(--muted); }
+    .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .controls input[type="text"], .controls input[type="password"] {
+      flex: 1 1 220px;
+      min-width: 160px;
+      padding: 9px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+      background: var(--surface);
+      color: var(--text);
+    }
+    .controls input:focus { outline: 2px solid var(--primary); border-color: var(--primary); }
+    select {
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+      background: var(--surface);
+      color: var(--text);
+      min-width: 130px;
+    }
+    button {
+      padding: 9px 14px;
+      border: none;
+      border-radius: 8px;
+      background: var(--primary);
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: var(--primary-dark); }
+    button:disabled { opacity: .5; cursor: default; }
+    button.ghost { background: transparent; color: var(--primary); border: 1px solid var(--border); }
+    button.ghost:hover { background: var(--chip); }
+    main { max-width: 960px; margin: 0 auto; padding: 16px 14px 60px; }
+    .status { color: var(--muted); font-size: 14px; padding: 10px 2px; }
+    .status.err { color: var(--danger); }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 16px;
+      margin-bottom: 12px;
+    }
+    .card h2 { margin: 0 0 2px; font-size: 15px; }
+    .barcode { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+    .chip {
+      background: var(--chip);
+      color: var(--chip-text);
+      border-radius: 999px;
+      padding: 2px 10px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .chip.warn { background: var(--warn-chip); color: var(--warn-chip-text); }
+    .chip b { font-weight: 700; }
+    .expand-btn {
+      margin-top: 8px;
+      font-size: 13px;
+    }
+    .branches {
+      margin: 10px 0 0;
+      border-top: 1px dashed var(--border);
+      padding-top: 8px;
+      display: none;
+    }
+    .branches.open { display: block; }
+    .branch-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: baseline;
+      font-size: 13px;
+      padding: 3px 0;
+    }
+    .branch-row.cheapest .amount { color: #059669; }
+    .branch-row .chain { min-width: 90px; color: var(--muted); }
+    .branch-row .store { min-width: 140px; }
+    .branch-row .amount { font-weight: 700; }
+    .hint { color: var(--muted); font-size: 13px; }
+    #loadMore { display: block; margin: 8px auto 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>קטלוג v2 — תצוגת מחירים לפי סניף</h1>
+    <div class="sub">קריאה בלבד. מציג את מה ששמור כרגע בטבלאות ה-Postgres (products/prices/stores) — לא Mongo.</div>
+    <div class="controls">
+      <input id="apiKey" type="password" placeholder="מפתח API (x-api-key)" autocomplete="off" />
+      <input id="search" type="text" placeholder="חיפוש מוצר (שם) — או השאר ריק לעיון בכל הקטלוג" />
+      <select id="fChain">
+        <option value="">כל הרשתות (מיון א-ב)</option>
+      </select>
+      <button id="reload">טען</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="status" class="status"></div>
+    <div id="list"></div>
+    <button id="loadMore" class="ghost" style="display:none">טען עוד</button>
+  </main>
+
+  <script>
+    (function () {
+      var CHAINS = [
+        { id: 'osher_ad', name: 'אושר עד' },
+        { id: 'rami_levy', name: 'רמי לוי' },
+        { id: 'yohananof', name: 'יוחננוף' },
+        { id: 'tiv_taam', name: 'טיב טעם' },
+      ];
+
+      var els = {
+        apiKey: document.getElementById('apiKey'),
+        search: document.getElementById('search'),
+        reload: document.getElementById('reload'),
+        status: document.getElementById('status'),
+        list: document.getElementById('list'),
+        loadMore: document.getElementById('loadMore'),
+        fChain: document.getElementById('fChain'),
+      };
+
+      var state = { mode: 'browse', cursor: null, hasMore: false, loading: false };
+
+      CHAINS.forEach(function (c) {
+        var opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = c.name + ' (הזול ביותר בתוך הרשת)';
+        els.fChain.appendChild(opt);
+      });
+
+      // Same localStorage key as the v1 admin screen — it's the same
+      // CATALOG_API_KEY / requireApiKey auth on both.
+      els.apiKey.value = localStorage.getItem('catalogApiKey') || '';
+      els.apiKey.addEventListener('change', function () {
+        localStorage.setItem('catalogApiKey', els.apiKey.value.trim());
+      });
+
+      function key() { return els.apiKey.value.trim(); }
+
+      function setStatus(msg, isErr) {
+        els.status.textContent = msg || '';
+        els.status.className = 'status' + (isErr ? ' err' : '');
+      }
+
+      async function api(path) {
+        var res = await fetch(path, { headers: { 'x-api-key': key() } });
+        if (res.status === 401) throw new Error('מפתח API שגוי או חסר (401)');
+        if (res.status === 404) return null;
+        if (!res.ok) throw new Error('שגיאת שרת ' + res.status);
+        return res.json();
+      }
+
+      function el(tag, cls, text) {
+        var e = document.createElement(tag);
+        if (cls) e.className = cls;
+        if (text != null) e.textContent = text;
+        return e;
+      }
+
+      function chip(label, value, warn) {
+        var c = el('span', 'chip' + (warn ? ' warn' : ''));
+        var b = el('b', null, label + ': ');
+        c.appendChild(b);
+        c.appendChild(document.createTextNode(value));
+        return c;
+      }
+
+      function fmtPrice(n) { return '₪' + Number(n).toFixed(2); }
+
+      function measureChips(m) {
+        var out = [];
+        if (!m) return out;
+        if (m.quantity != null) out.push(chip('כמות', String(m.quantity)));
+        if (m.unitOfMeasure) out.push(chip('יח׳ מידה', m.unitOfMeasure));
+        if (m.unitQty) out.push(chip('נמכר לפי', m.unitQty));
+        if (m.qtyInPackage) out.push(chip('באריזה', m.qtyInPackage));
+        if (m.isWeighted != null) out.push(chip('שקיל', m.isWeighted ? 'כן' : 'לא'));
+        return out;
+      }
+
+      function priceChip(p) {
+        if (p.priceVaries) {
+          return chip('טווח מחיר', fmtPrice(p.cheapestPrice) + ' – ' + fmtPrice(p.priciestPrice), true);
+        }
+        return chip('מחיר', fmtPrice(p.cheapestPrice));
+      }
+
+      function card(p) {
+        var c = el('div', 'card');
+        c.appendChild(el('h2', null, p.name || '(ללא שם)'));
+        c.appendChild(el('div', 'barcode', 'ברקוד: ' + p.id));
+
+        var meta = el('div', 'meta');
+        if (p.brand) meta.appendChild(chip('מותג', p.brand));
+        meta.appendChild(priceChip(p));
+        meta.appendChild(chip('סניפים', String(p.storeCount)));
+        measureChips(p.measure).forEach(function (ch) { meta.appendChild(ch); });
+        c.appendChild(meta);
+
+        var branches = el('div', 'branches');
+        var expandBtn = el('button', 'ghost expand-btn', 'הצג לפי סניף (' + p.storeCount + ')');
+        expandBtn.type = 'button';
+        var loaded = false;
+        expandBtn.addEventListener('click', async function () {
+          var open = branches.classList.toggle('open');
+          expandBtn.textContent = (open ? 'הסתר' : 'הצג לפי סניף (' + p.storeCount + ')');
+          if (open && !loaded) {
+            loaded = true;
+            branches.appendChild(el('div', 'hint', 'טוען…'));
+            try {
+              var data = await api('/api/v2/products/' + encodeURIComponent(p.id));
+              branches.innerHTML = '';
+              if (!data || !data.product) {
+                branches.appendChild(el('div', 'hint', 'לא נמצא.'));
+                return;
+              }
+              var cheapest = Math.min.apply(null, data.product.prices.map(function (pr) { return pr.price; }));
+              data.product.prices.forEach(function (pr) {
+                var row = el('div', 'branch-row' + (pr.price === cheapest ? ' cheapest' : ''));
+                row.appendChild(el('span', 'chain', pr.chainName));
+                row.appendChild(el('span', 'store', pr.storeName + ' (' + pr.storeId + ')'));
+                row.appendChild(el('span', 'amount', fmtPrice(pr.price)));
+                branches.appendChild(row);
+              });
+            } catch (err) {
+              branches.innerHTML = '';
+              branches.appendChild(el('div', 'hint', 'שגיאה בטעינת הסניפים: ' + err.message));
+            }
+          }
+        });
+        c.appendChild(expandBtn);
+        c.appendChild(branches);
+
+        return c;
+      }
+
+      function appendProducts(items) {
+        items.forEach(function (p) { els.list.appendChild(card(p)); });
+      }
+
+      async function loadBrowse(reset) {
+        if (state.loading) return;
+        if (reset) { els.list.innerHTML = ''; state.cursor = null; }
+        state.loading = true;
+        els.loadMore.disabled = true;
+        setStatus('טוען מוצרים…');
+        try {
+          var params = ['limit=30'];
+          if (els.fChain.value) params.push('chain=' + encodeURIComponent(els.fChain.value));
+          if (state.cursor) params.push('cursor=' + encodeURIComponent(state.cursor));
+          var data = await api('/api/v2/products?' + params.join('&'));
+          appendProducts(data.products || []);
+          state.cursor = data.cursor;
+          state.hasMore = !!data.hasMore;
+          els.loadMore.style.display = state.hasMore ? 'block' : 'none';
+          setStatus(els.list.childNodes.length + ' מוצרים נטענו' + (state.hasMore ? ' (יש עוד)' : ''));
+        } catch (err) {
+          setStatus(err.message, true);
+        } finally {
+          state.loading = false;
+          els.loadMore.disabled = false;
+        }
+      }
+
+      async function loadSearch(term) {
+        if (state.loading) return;
+        state.loading = true;
+        els.list.innerHTML = '';
+        els.loadMore.style.display = 'none';
+        setStatus('מחפש "' + term + '"…');
+        try {
+          var data = await api('/api/v2/products/search?q=' + encodeURIComponent(term) + '&limit=25');
+          appendProducts(data.products || []);
+          setStatus((data.products || []).length + ' תוצאות עבור "' + term + '"');
+        } catch (err) {
+          setStatus(err.message, true);
+        } finally {
+          state.loading = false;
+        }
+      }
+
+      function run() {
+        if (!key()) { setStatus('הזן מפתח API כדי לטעון את הקטלוג.', true); return; }
+        var term = els.search.value.trim();
+        if (term.length >= 2) { state.mode = 'search'; loadSearch(term); }
+        else { state.mode = 'browse'; loadBrowse(true); }
+      }
+
+      els.reload.addEventListener('click', run);
+      els.search.addEventListener('keydown', function (e) { if (e.key === 'Enter') run(); });
+      els.loadMore.addEventListener('click', function () { loadBrowse(false); });
+      els.fChain.addEventListener('change', run);
+
+      if (key()) run();
+      else setStatus('הזן מפתח API כדי להתחיל.');
+    })();
+  </script>
+</body>
+</html>

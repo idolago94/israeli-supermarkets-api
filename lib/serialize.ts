@@ -22,6 +22,9 @@ export interface ApiProduct {
     price: number;
     unitOfMeasurePrice?: number;
     allowDiscount?: boolean;
+    /** True when this chain's branches don't all sell the item at `price` —
+     *  it's the cheapest of the per-branch prices, not a flat chain price. */
+    priceVaries?: boolean;
     updatedAt: string;
   }[];
 }
@@ -34,6 +37,7 @@ export function toApiProduct(doc: ProductDoc): ApiProduct {
       price: typeof p.price === 'number' ? p.price : parseFloat(String(p.price)),
       ...(typeof p.unitOfMeasurePrice === 'number' ? { unitOfMeasurePrice: p.unitOfMeasurePrice } : {}),
       ...(typeof p.allowDiscount === 'boolean' ? { allowDiscount: p.allowDiscount } : {}),
+      ...(typeof p.priceVaries === 'boolean' ? { priceVaries: p.priceVaries } : {}),
       updatedAt:
         p.updatedAt instanceof Date
           ? p.updatedAt.toISOString()

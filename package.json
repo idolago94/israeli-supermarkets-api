@@ -10,6 +10,7 @@
   "engines": { "node": ">=20" },
   "dependencies": {
     "mongodb": "^6.10.0",
+    "postgres": "^3.4.4",
     "undici": "^6.19.0"
   },
   "devDependencies": {
