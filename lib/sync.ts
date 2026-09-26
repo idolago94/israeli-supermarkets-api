@@ -15,20 +15,10 @@ import {
   downloadFile,
 } from './cerberus';
 
-// ─── Chains ───────────────────────────────────────────────────────────────────
-// ids must match the keys written into products.prices and the INDEXED_CHAINS
-// list in mongo.ts.
-
-export const CHAINS: ChainConfig[] = [
-  { id: 'osher_ad', nameHe: 'אושר עד', username: 'osherad' },
-  { id: 'rami_levy', nameHe: 'רמי לוי', username: 'RamiLevi' },
-  { id: 'yohananof', nameHe: 'יוחננוף', username: 'yohananof' },
-  { id: 'tiv_taam', nameHe: 'טיב טעם', username: 'TivTaam' },
-];
-
-export function findChain(id: string): ChainConfig | undefined {
-  return CHAINS.find((c) => c.id === id);
-}
+// Chain config lives in lib/chains.ts (Mongo-independent, so v2 routes can use
+// it without requiring MONGODB_URI) — re-exported here so v1 call sites don't
+// need to change their import path.
+export { CHAINS, findChain } from './chains';
 
 const MAX_ITEMS_PER_CHAIN = 25000;
 

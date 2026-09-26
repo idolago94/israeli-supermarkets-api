@@ -279,10 +279,12 @@ as `/admin.html`, and reuses the same stored key.
 - Not on the scheduler workflow, and no data has been migrated from v1's
   MongoDB (departments assigned via the v1 admin screen don't carry over —
   v2's `departments` column exists in the schema but nothing populates it).
-- `DATABASE_URL` should be Supabase's **pooled** ("Transaction" mode, port
-  6543) connection string — same reasoning as v1's cached `MongoClient`, a
-  direct connection per invocation would exhaust Postgres' connection limit
-  under concurrent Vercel invocations.
+- `DATABASE_URL` should be a **pooled** connection string, any Postgres
+  provider — same reasoning as v1's cached `MongoClient`, a direct connection
+  per invocation would exhaust Postgres' connection limit under concurrent
+  Vercel invocations. This deployment uses Neon (Vercel Marketplace), whose
+  `DATABASE_URL` is pooled by default (`-pooler` in the hostname); on
+  Supabase pick "Transaction" mode, port 6543.
 
 ## Notes & limits
 

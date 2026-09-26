@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { requireSyncSecret } from '../../../lib/auth';
-import { CHAINS, findChain } from '../../../lib/sync';
+import { CHAINS, findChain } from '../../../lib/chains';
 import { syncChainFullV2 } from '../../../lib/syncV2';
 
 // GET/POST /api/v2/sync/full?chain=<id>&force=1

@@ -24,10 +24,26 @@ const missingIntermediate = readFileSync(
 );
 const cerberusDispatcher = new Agent({
   connect: { ca: [...rootCertificates, missingIntermediate] },
+  // The portal occasionally accepts a connection and then never sends a
+  // response (seen as undici's default 300s headersTimeout expiring) —
+  // fail fast instead of hanging a full sync for 5 minutes per stalled
+  // request. bodyTimeout is separate since a full PriceFull download can
+  // legitimately take longer than the time-to-first-byte.
+  headersTimeout: 20_000,
+  bodyTimeout: 60_000,
 });
 
+const CERBERUS_FETCH_RETRIES = 2;
+
 async function cerberusFetch(url: string, init: Record<string, unknown> = {}): Promise<Response> {
-  return fetch(url, { ...init, dispatcher: cerberusDispatcher } as any);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetch(url, { ...init, dispatcher: cerberusDispatcher } as any);
+    } catch (err) {
+      if (attempt >= CERBERUS_FETCH_RETRIES) throw err;
+      await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
+    }
+  }
 }
 
 export interface ChainConfig {
