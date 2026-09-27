@@ -196,6 +196,20 @@ export async function downloadFile(cookie: string, fname: string): Promise<strin
   const res = await cerberusFetch(downloadUrl(fname), { headers: { cookie } });
   if (!res.ok) throw new Error(`download failed (${res.status}) for ${fname}`);
   const buf = Buffer.from(await res.arrayBuffer());
-  const xmlBuf = fname.toLowerCase().endsWith('.gz') ? gunzipSync(buf) : buf;
+  let xmlBuf: Buffer;
+  if (fname.toLowerCase().endsWith('.gz')) {
+    try {
+      xmlBuf = gunzipSync(buf);
+    } catch (err) {
+      // A 200 response whose body isn't actually gzip (portal error/rate-limit
+      // page served with the expected content-type, a truncated transfer) — cut
+      // the opaque zlib error down to something that names the offending file
+      // and shows enough of the body to tell the two apart from the logs.
+      const preview = buf.subarray(0, 200).toString('utf8').replace(/\s+/g, ' ').trim();
+      throw new Error(`invalid gzip for ${fname} (${buf.length} bytes): ${err}; body starts: ${preview}`);
+    }
+  } else {
+    xmlBuf = buf;
+  }
   return decodeXmlBuffer(xmlBuf);
 }
