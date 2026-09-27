@@ -284,11 +284,20 @@ export async function syncChainFull(
     return { chain: chain.id, stores: perStore.length, skipped: true, reason: 'unchanged (HEAD check)' };
   }
 
+  // One bad branch file (portal hiccup, an error page served as a 200, a
+  // truncated transfer) must not sink the other ~99 — collect failures
+  // instead of letting Promise.all reject the whole chain on the first one.
   const merge = new Map<string, MergeEntry>();
-  await mapWithConcurrency(perStore, FULL_SYNC_CONCURRENCY, async ({ file }) => {
-    const xml = await downloadFile(cookie, file);
-    const items = parsePriceItemsXml(xml, MAX_ITEMS_PER_CHAIN);
-    for (const item of items) foldItemIntoMerge(merge, item);
+  const failedStores = new Set<string>();
+  await mapWithConcurrency(perStore, FULL_SYNC_CONCURRENCY, async ({ storeId, file }) => {
+    try {
+      const xml = await downloadFile(cookie, file);
+      const items = parsePriceItemsXml(xml, MAX_ITEMS_PER_CHAIN);
+      for (const item of items) foldItemIntoMerge(merge, item);
+    } catch (err) {
+      failedStores.add(storeId);
+      console.error(`syncChainFull: ${chain.id} branch ${storeId} (${file}) failed: ${err}`);
+    }
   });
   const items = mergeEntriesToItems(merge);
   await writeChainPrices(chain, items);
@@ -296,18 +305,33 @@ export async function syncChainFull(
   // A fresh full snapshot supersedes older delta files for the branches it
   // covered, so fast-forward each of those branches' delta cursor to at least
   // its own file's timestamp (branches not in this sync, e.g. a configured
-  // chain.storeId override, keep whatever cursor they already had).
+  // chain.storeId override, or that failed to download above, keep whatever
+  // cursor they already had — deltas keep covering them until a full sync
+  // actually lands their data).
   const lastDeltaTimestamps = { ...(state?.lastDeltaTimestamps ?? {}) };
   for (const { storeId, file } of perStore) {
+    if (failedStores.has(storeId)) continue;
     const ts = fileTimestamp(file);
     if (!lastDeltaTimestamps[storeId] || ts > lastDeltaTimestamps[storeId]) {
       lastDeltaTimestamps[storeId] = ts;
     }
   }
 
-  await setSyncState(chain.id, { lastFullSignature: signature, lastDeltaTimestamps });
+  // Only record this run's signature as the "nothing changed, skip next time"
+  // baseline when every branch actually downloaded — otherwise a future
+  // HEAD-check could see unchanged metadata for the branches that failed here
+  // and skip retrying them indefinitely.
+  await setSyncState(chain.id, {
+    ...(failedStores.size === 0 ? { lastFullSignature: signature } : {}),
+    lastDeltaTimestamps,
+  });
 
-  return { chain: chain.id, stores: perStore.length, items: items.length };
+  return {
+    chain: chain.id,
+    stores: perStore.length,
+    items: items.length,
+    storesFailed: failedStores.size ? [...failedStores] : undefined,
+  };
 }
 
 // ─── Delta sync (intraday) ─────────────────────────────────────────────────────
