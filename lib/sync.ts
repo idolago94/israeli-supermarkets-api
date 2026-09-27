@@ -25,36 +25,46 @@ const MAX_ITEMS_PER_CHAIN = 25000;
 // A full sync's branch downloads run with bounded concurrency instead of one
 // giant Promise.all — chains like rami_levy publish ~100 branch files, and
 // unbounded parallel fetches would both hammer the portal and risk the
-// function's memory ceiling holding that many responses at once.
-const FULL_SYNC_CONCURRENCY = 6;
+// function's memory ceiling holding that many responses at once. Folding each
+// branch's items into the running merge as it arrives (see foldItemIntoMerge)
+// keeps only one entry per unique barcode resident instead of every branch's
+// full item list at once, so this can afford to run wider than the old 6.
+const FULL_SYNC_CONCURRENCY = 12;
 
 /** items extended with a flag noting cross-branch price disagreement. */
 interface AggregatedItem extends ParsedItem {
   priceVaries?: boolean;
 }
 
-/**
- * Merges each branch's parsed items into one row per barcode: `price` is the
- * cheapest of the branches that carry the item, and `priceVaries` flags items
- * whose branches don't all agree on that price.
- */
-function mergeItemsAcrossStores(perStoreItems: ParsedItem[][]): AggregatedItem[] {
-  const byCode = new Map<string, ParsedItem[]>();
-  for (const items of perStoreItems) {
-    for (const item of items) {
-      const arr = byCode.get(item.code);
-      if (arr) arr.push(item);
-      else byCode.set(item.code, [item]);
-    }
-  }
+interface MergeEntry {
+  best: ParsedItem;
+  varies: boolean;
+}
 
-  const merged: AggregatedItem[] = [];
-  for (const items of byCode.values()) {
-    const cheapest = items.reduce((best, cur) => (cur.price < best.price ? cur : best));
-    const priceVaries = items.some((it) => it.price !== cheapest.price);
-    merged.push({ ...cheapest, priceVaries });
+/**
+ * Folds one branch's items into the chain-wide merge: `best` tracks the
+ * cheapest item seen so far for the barcode, `varies` flags a barcode whose
+ * branches don't all agree on price (order-independent — it's set the moment
+ * two different prices are seen, regardless of which arrives first).
+ *
+ * Used instead of collecting every branch's full item array before merging —
+ * for a ~100-branch chain like rami_levy, that would hold on the order of a
+ * million ParsedItem objects (mostly duplicates of the same barcode across
+ * branches) in memory at once. Folding incrementally keeps only one entry per
+ * unique barcode resident.
+ */
+function foldItemIntoMerge(merge: Map<string, MergeEntry>, item: ParsedItem): void {
+  const existing = merge.get(item.code);
+  if (!existing) {
+    merge.set(item.code, { best: item, varies: false });
+    return;
   }
-  return merged;
+  if (item.price !== existing.best.price) existing.varies = true;
+  if (item.price < existing.best.price) existing.best = item;
+}
+
+function mergeEntriesToItems(merge: Map<string, MergeEntry>): AggregatedItem[] {
+  return [...merge.values()].map(({ best, varies }) => ({ ...best, priceVaries: varies }));
 }
 
 // ─── syncState (per chain) ────────────────────────────────────────────────────
@@ -274,11 +284,13 @@ export async function syncChainFull(
     return { chain: chain.id, stores: perStore.length, skipped: true, reason: 'unchanged (HEAD check)' };
   }
 
-  const perStoreItems = await mapWithConcurrency(perStore, FULL_SYNC_CONCURRENCY, async ({ file }) => {
+  const merge = new Map<string, MergeEntry>();
+  await mapWithConcurrency(perStore, FULL_SYNC_CONCURRENCY, async ({ file }) => {
     const xml = await downloadFile(cookie, file);
-    return parsePriceItemsXml(xml, MAX_ITEMS_PER_CHAIN);
+    const items = parsePriceItemsXml(xml, MAX_ITEMS_PER_CHAIN);
+    for (const item of items) foldItemIntoMerge(merge, item);
   });
-  const items = mergeItemsAcrossStores(perStoreItems);
+  const items = mergeEntriesToItems(merge);
   await writeChainPrices(chain, items);
 
   // A fresh full snapshot supersedes older delta files for the branches it
