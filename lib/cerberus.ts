@@ -1,8 +1,9 @@
-import { gunzipSync } from 'zlib';
+import { gunzipSync, inflateRawSync } from 'zlib';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { Agent } from 'undici';
 import { rootCertificates } from 'tls';
+import { tagStage } from './syncFailures';
 
 // ─── Cerberus portal client ───────────────────────────────────────────────────
 //
@@ -124,8 +125,28 @@ export async function cerberusListFiles(cookie: string, search: string): Promise
   return rows.map((r) => (typeof r === 'string' ? r : r?.fname ?? r?.name ?? ''));
 }
 
+/**
+ * The publish time in a file name, as a sortable 14-digit "YYYYMMDDHHMMSS".
+ * The portal uses two layouts:
+ *   current: "Price7290058140886-001-039-20261011-070012.gz" (date-time, dashed)
+ *   legacy:  "price7290058140886-039-202607151000.gz"        (12 digits, no seconds)
+ * Only digit runs that start right after a '-' are considered, so the 13-digit
+ * chain id at the front of every name can never be mistaken for a timestamp
+ * (which an unanchored /\d{12}/ did — it returned the chain id's first 12
+ * digits for every file, so no file ever compared newer than another).
+ * Returns '' when the name carries no timestamp.
+ */
 export function fileTimestamp(name: string): string {
-  return /(\d{12})/.exec(name)?.[1] ?? '';
+  const current = /-(\d{8})-?(\d{6})(?!\d)/.exec(name);
+  if (current) return current[1] + current[2];
+  const legacy = /-(\d{12})(?!\d)/.exec(name);
+  return legacy ? `${legacy[1]}00` : '';
+}
+
+/** True for a value fileTimestamp() can produce — used to discard delta
+ *  cursors persisted by the old chain-id-as-timestamp parser. */
+export function isFileTimestamp(value: string | undefined): value is string {
+  return !!value && /^20\d{12}$/.test(value);
 }
 
 export function filterByStore(files: string[], storeId?: string): string[] {
@@ -137,11 +158,12 @@ export function filterByStore(files: string[], storeId?: string): string[] {
 /**
  * Extracts the per-branch store id from a PriceFull/Price file name, e.g.
  * "PriceFull7290103152017-001-010-20260812-080004.gz" -> "010". Every chain
- * observed so far publishes one such file per branch; returns null for a
- * name that doesn't carry a subchain+store segment.
+ * observed so far publishes one such file per branch. The sub-chain segment is
+ * optional: rami_levy's legacy files ("price7290058140886-039-202607151000.gz")
+ * carry only the store. Returns null for a name with no store segment.
  */
 export function storeIdFromFileName(name: string): string | null {
-  return /^\D+\d+-\d{3}-(\d{3})-/.exec(name)?.[1] ?? null;
+  return /^\D+\d+-(?:\d{3}-)?(\d{3})-\d/.exec(name)?.[1] ?? null;
 }
 
 export function pickLatestFile(files: string[], storeId?: string): string | null {
@@ -192,24 +214,89 @@ function decodeXmlBuffer(buf: Buffer): string {
   return buf.toString('utf8').replace(/^\uFEFF/, '');
 }
 
-export async function downloadFile(cookie: string, fname: string): Promise<string> {
-  const res = await cerberusFetch(downloadUrl(fname), { headers: { cookie } });
-  if (!res.ok) throw new Error(`download failed (${res.status}) for ${fname}`);
-  const buf = Buffer.from(await res.arrayBuffer());
-  let xmlBuf: Buffer;
-  if (fname.toLowerCase().endsWith('.gz')) {
-    try {
-      xmlBuf = gunzipSync(buf);
-    } catch (err) {
-      // A 200 response whose body isn't actually gzip (portal error/rate-limit
-      // page served with the expected content-type, a truncated transfer) — cut
-      // the opaque zlib error down to something that names the offending file
-      // and shows enough of the body to tell the two apart from the logs.
-      const preview = buf.subarray(0, 200).toString('utf8').replace(/\s+/g, ' ').trim();
-      throw new Error(`invalid gzip for ${fname} (${buf.length} bytes): ${err}; body starts: ${preview}`);
+const ZIP_LOCAL_HEADER = 0x04034b50;
+const ZIP_CENTRAL_HEADER = 0x02014b50;
+const ZIP_END_OF_CENTRAL_DIR = 0x06054b50;
+
+/**
+ * Extracts the first file from a ZIP archive. Some chains publish files named
+ * ".gz" whose body is really a ZIP holding a single XML (rami_levy's legacy
+ * "price…-039-…" files, body starting "PK\x03\x04"). Handles the stored and
+ * deflate methods those use, reading sizes from the central directory so a
+ * local header with a trailing data descriptor (sizes zeroed) works too. No
+ * ZIP64 — every source file is a few MB at most.
+ */
+export function unzipFirstEntry(buf: Buffer): Buffer {
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 0xffff); i--) {
+    if (buf.readUInt32LE(i) === ZIP_END_OF_CENTRAL_DIR) {
+      eocd = i;
+      break;
     }
-  } else {
-    xmlBuf = buf;
   }
-  return decodeXmlBuffer(xmlBuf);
+  if (eocd < 0) throw new Error('zip: end of central directory not found');
+
+  const entries = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+  for (let n = 0; n < entries; n++) {
+    if (buf.readUInt32LE(p) !== ZIP_CENTRAL_HEADER) throw new Error('zip: corrupt central directory');
+    const method = buf.readUInt16LE(p + 10);
+    const compressedSize = buf.readUInt32LE(p + 20);
+    const nameLen = buf.readUInt16LE(p + 28);
+    const extraLen = buf.readUInt16LE(p + 30);
+    const commentLen = buf.readUInt16LE(p + 32);
+    const localOffset = buf.readUInt32LE(p + 42);
+    const name = buf.subarray(p + 46, p + 46 + nameLen).toString('utf8');
+    p += 46 + nameLen + extraLen + commentLen;
+    if (name.endsWith('/')) continue; // directory entry
+
+    if (buf.readUInt32LE(localOffset) !== ZIP_LOCAL_HEADER) throw new Error('zip: corrupt local header');
+    const start = localOffset + 30 + buf.readUInt16LE(localOffset + 26) + buf.readUInt16LE(localOffset + 28);
+    const data = buf.subarray(start, start + compressedSize);
+    if (method === 0) return Buffer.from(data);
+    if (method === 8) return inflateRawSync(data);
+    throw new Error(`zip: unsupported compression method ${method} for ${name}`);
+  }
+  throw new Error('zip: archive has no file entries');
+}
+
+/**
+ * Decompresses a downloaded file body by sniffing its magic bytes rather than
+ * trusting the extension — the portal serves both gzip and ZIP bodies under
+ * ".gz". Anything else under a compressed extension is a portal error page or
+ * a truncated transfer, reported with the file name and a body preview.
+ */
+export function decompressFileBody(buf: Buffer, fname: string): Buffer {
+  const isGzip = buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b;
+  const isZip = buf.length >= 4 && buf.readUInt32LE(0) === ZIP_LOCAL_HEADER;
+  const compressedName = /\.(gz|zip)$/i.test(fname);
+  if (!isGzip && !isZip && !compressedName) return buf;
+
+  try {
+    if (isZip) return unzipFirstEntry(buf);
+    return gunzipSync(buf);
+  } catch (err) {
+    // A 200 response whose body isn't actually an archive (portal error/rate-
+    // limit page served with the expected content-type, a truncated transfer)
+    // — cut the opaque zlib error down to something that names the offending
+    // file and shows enough of the body to tell the two apart from the logs.
+    const kind = isZip ? 'zip' : 'gzip';
+    const preview = buf.subarray(0, 200).toString('utf8').replace(/\s+/g, ' ').trim();
+    throw tagStage(
+      new Error(`invalid ${kind} for ${fname} (${buf.length} bytes): ${err}; body starts: ${preview}`),
+      'decompress',
+    );
+  }
+}
+
+export async function downloadFile(cookie: string, fname: string): Promise<string> {
+  let buf: Buffer;
+  try {
+    const res = await cerberusFetch(downloadUrl(fname), { headers: { cookie } });
+    if (!res.ok) throw new Error(`download failed (${res.status}) for ${fname}`);
+    buf = Buffer.from(await res.arrayBuffer());
+  } catch (err) {
+    throw tagStage(err, 'download');
+  }
+  return decodeXmlBuffer(decompressFileBody(buf, fname));
 }

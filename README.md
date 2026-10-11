@@ -93,6 +93,23 @@ price. The chain's branch directory itself (name, address, city) is kept in a
 separate `stores` collection, refreshed by `/api/sync/stores` from each
 chain's daily Stores file — small and independent of the price fan-out.
 
+### File names, formats and stale files
+
+Branch files are named `<Type><chainId>-<subChainId>-<storeId>-<YYYYMMDD>-<HHMMSS>.gz`.
+`rami_levy` branch `039` still publishes an older layout —
+`pricefull7290058140886-039-202610110515.gz`: lowercase, no sub-chain segment,
+a 12-digit timestamp, a **ZIP** body despite the `.gz` name, and `<ItemNm>`
+instead of `<ItemName>` inside. `lib/cerberus.ts` and `lib/parse.ts` accept
+both layouts (archives are detected by their magic bytes, not their
+extension).
+
+Files published more than `MAX_FILE_AGE_DAYS` (7, `lib/branches.ts`) before
+the newest file in the same listing are ignored: the portal keeps listing
+files of branches that stopped publishing (e.g. `rami_levy` legacy deltas from
+July 2026), and their months-old prices must not leak into the chain's
+minimum. A full-sync branch file that parses to zero items counts as a failed
+branch (reported, never silently dropped).
+
 ### Intraday deltas: branch-scoped, price-can-only-drop
 
 Delta files are published per branch too. `/api/sync/deltas` tracks each
@@ -109,6 +126,15 @@ the real cheapest. The catalog shows a stale ₪10 until the next full sync
 recomputes the true minimum across every branch. `priceVaries` is also only
 trustworthy as of the last full sync — a delta-driven price change doesn't
 recompute it.
+
+Each delta run applies branches in parallel (`DELTA_SYNC_CONCURRENCY`), each
+branch's own files strictly oldest-first. One bad file fails only its branch:
+the branch stops there without advancing its cursor (the next run retries;
+the nightly full sync fast-forwards past a permanently bad file), the rest of
+the chain carries on, and the failure is reported (see *Failure reporting*). A
+branch with no valid cursor applies only its newest file. Cursors are
+`YYYYMMDDHHMMSS`; values written before the timestamp parser fix (the first 12
+digits of the chain id) are discarded on read.
 
 This was a deliberate simplification (no per-branch price cache — only the
 chain-level aggregate is stored) rather than a bug: fixing the blind spot
@@ -131,6 +157,8 @@ See [`.env.example`](.env.example). Set these in the Vercel project settings:
 | `MONGODB_DB` | Database name (defaults to `catalog`). |
 | `CATALOG_API_KEY` | The app sends it in `x-api-key` on every read. |
 | `SYNC_SECRET` | Required to trigger `/api/sync/*`. |
+| `SYNC_ISSUES_GITHUB_TOKEN` | *Optional.* Lets the endpoints file failure issues for runs **not** started by the scheduler (manual `curl`, any other caller). Fine-grained token for this repo with **Issues: Read and write**. |
+| `SYNC_ISSUES_GITHUB_REPO` | *Optional.* `owner/repo` for those issues; defaults to Vercel's `VERCEL_GIT_REPO_OWNER`/`VERCEL_GIT_REPO_SLUG`. |
 
 And these as **GitHub Actions repository secrets** (Settings → Secrets and
 variables → Actions), for the scheduler:
@@ -139,6 +167,9 @@ variables → Actions), for the scheduler:
 |---|---|
 | `CATALOG_API_BASE` | The deployment's base URL, no trailing slash. |
 | `SYNC_SECRET` | Exactly the same value as `SYNC_SECRET` above. |
+
+The scheduler's failure reporting needs no secret: it uses the run's own
+`GITHUB_TOKEN`, granted `issues: write` in the workflow's `permissions`.
 
 ## Deploy
 
@@ -199,6 +230,46 @@ workflow*) with `mode`, `chain` and `force` inputs — that replaces the old
 >
 > Note that GitHub disables scheduled workflows in repositories with no activity
 > for 60 days; re-enable from the Actions tab if that happens.
+
+## Failure reporting (GitHub issues)
+
+Every sync failure becomes a GitHub issue labelled `sync-failure` — both a
+chain's flow failing outright and a single branch file the flow skipped while
+the rest of the chain synced (which still returns HTTP 200).
+
+- **What's recorded** (`lib/syncFailures.ts`): flow (`stores`/`full`/`deltas`/
+  `full-v2`), level (`file`/`flow`), failed stage (`login`, `list-files`,
+  `head-check`, `download`, `decompress`, `parse`, `write-db`, `sync-state`,
+  `request`), chain, store id, file, timestamp, error message, stack and
+  cause. The endpoints return these in the response's `failures` array.
+- **Issue contents** (`lib/githubIssues.ts`): the above plus the execution
+  parameters and log references — the Actions run URL and the Vercel request
+  id of every attempt (search it in the Vercel project's *Logs*).
+- **No duplicates:** failures are fingerprinted by flow + level + stage +
+  chain + error message with file names, numbers and request ids stripped.
+  All failures of one run that share a fingerprint go into one report (40
+  branches failing the same way = one issue listing 40 files). A fingerprint
+  that already has an **open** issue gets a comment with the new occurrence
+  instead of a new issue; close the issue once fixed and a recurrence opens a
+  fresh one.
+- **Who reports:** scheduled/manual workflow runs report from the workflow's
+  last steps (`scripts/report-sync-failures.ts`), because only the workflow
+  sees invocations that crashed or timed out before our code could respond,
+  and can group a retried request's attempts. It asks the endpoint not to
+  report (`x-sync-issue-reporting: caller`). Any other caller (a manual
+  `curl`, another service) gets reports from the endpoint itself when
+  `SYNC_ISSUES_GITHUB_TOKEN` is set.
+- **Never masks the sync:** reporting runs after the outcome is decided, is
+  time-boxed, never throws, and its own problems are only logged
+  (`[sync-issues]` in Vercel logs, a `::warning::` in Actions). The workflow's
+  reporting steps are `continue-on-error`.
+
+## Tests
+
+```bash
+npm test        # node:test via ts-node — no database or network needed
+npm run build   # type check (api, lib, scripts, tests)
+```
 
 ## Downloading a chain's raw catalog locally
 

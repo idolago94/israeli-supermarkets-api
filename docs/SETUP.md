@@ -101,6 +101,12 @@ Expo app                                        ← הצרכן: חיפוש וה�
    (`full`/`deltas`), `chain`, ו-`force`. זה מחליף את פונקציית ה-HTTP הישנה
    `syncCatalogNow`.
 
+4. **דיווח תקלות:** כל כשל בסנכרון — של רשת שלמה או של קובץ סניף בודד שדולג —
+   נפתח אוטומטית כ-issue בריפו עם התווית `sync-failure` (שלב שנכשל, רשת, סניף,
+   קובץ, שגיאה ו-stack, פרמטרים וקישור לריצה). אותה תקלה שחוזרת מתווספת כתגובה
+   ל-issue הפתוח במקום לפתוח חדש. לא צריך סוד נוסף — ה-workflow משתמש ב-`GITHUB_TOKEN`
+   של הריצה (`permissions: issues: write`). פרטים ב-README, "Failure reporting".
+
 > GitHub משבית workflows מתוזמנים בריפו שלא הייתה בו פעילות 60 יום. אם זה קורה,
 > מפעילים מחדש מלשונית Actions.
 
@@ -186,6 +192,7 @@ https://israeli-supermarkets-api.vercel.app/admin.html
 | `MONGODB_DB` | ✅ | | | — |
 | `CATALOG_API_KEY` | ✅ `CATALOG_API_KEY` | | ✅ `EXPO_PUBLIC_CATALOG_API_KEY` | **כן** — Vercel ↔ App |
 | `SYNC_SECRET` | ✅ `SYNC_SECRET` | ✅ `SYNC_SECRET` | | **כן** — Vercel ↔ Actions |
+| `SYNC_ISSUES_GITHUB_TOKEN` | אופציונלי — רק לדיווח issues מריצות שלא דרך ה-workflow | | | — |
 | כתובת ה-API | (זו כתובת הפריסה) | ✅ `CATALOG_API_BASE` | ✅ `EXPO_PUBLIC_CATALOG_API_BASE` | אותה כתובת |
 
 שני זוגות ה"חייב להתאים" הם נקודות הכשל הנפוצות ביותר. אם משהו מחזיר 401 —
@@ -203,6 +210,7 @@ https://israeli-supermarkets-api.vercel.app/admin.html
 | הקטלוג ריק אחרי סנכרון | הסנכרון עוד לא רץ — הרץ הזרעה ידנית (שלב 5), ובדוק את הלוגים של Vercel |
 | ה-workflow המתוזמן לא רץ | הריפו לא היה פעיל 60 יום ו-GitHub השבית אותו, או שהסודות חסרים |
 | סנכרון חוצה את 300 שניות | ה-workflow כבר קורא per-chain; אם רשת בודדת חוצה, פצל לפי סניף (`storeId`) או העלה את `maxDuration` |
+| נפתח issue עם התווית `sync-failure` | כשל בסנכרון — ה-issue מפרט שלב, רשת, סניף, קובץ, שגיאה וקישור ללוגים |
 | האפליקציה לא מוצאת מוצרים | לא בנית מחדש אחרי עדכון `.env`, או `EXPO_PUBLIC_CATALOG_API_BASE` שגוי |
 
 היכן לראות לוגים:

@@ -2,7 +2,7 @@ import type { AnyBulkWriteOperation } from 'mongodb';
 import { products, stores, syncState, ProductDoc, StoreDoc, SyncStateDoc } from './mongo';
 import { ParsedItem, parsePriceItemsXml, generateKeywords } from './parse';
 import { ParsedStore, parseStoresXml } from './stores';
-import { mapWithConcurrency, latestFilePerStore } from './branches';
+import { mapWithConcurrency, latestFilePerStore, dropStaleFiles } from './branches';
 import {
   ChainConfig,
   cerberusLogin,
@@ -10,10 +10,12 @@ import {
   pickLatestFile,
   filterByStore,
   fileTimestamp,
+  isFileTimestamp,
   storeIdFromFileName,
   headFileMeta,
   downloadFile,
 } from './cerberus';
+import { FailureSink, tagStage, withStage } from './syncFailures';
 
 // Chain config lives in lib/chains.ts (Mongo-independent, so v2 routes can use
 // it without requiring MONGODB_URI) — re-exported here so v1 call sites don't
@@ -30,6 +32,20 @@ const MAX_ITEMS_PER_CHAIN = 25000;
 // keeps only one entry per unique barcode resident instead of every branch's
 // full item list at once, so this can afford to run wider than the old 6.
 const FULL_SYNC_CONCURRENCY = 12;
+
+// Branches whose delta files are applied in parallel. Each branch's own files
+// still apply strictly oldest-first; only different branches overlap. rami_levy
+// publishes ~100 delta files an hour, so a 4-hour gap between runs is ~400
+// small files — too many to fetch one at a time inside the function's limit.
+const DELTA_SYNC_CONCURRENCY = 8;
+
+/** Options shared by the sync entry points. */
+export interface SyncRunOptions {
+  /** Receives every failure the flow handles internally (a branch file that
+   *  failed while the rest of the chain carried on), so it can be reported
+   *  even though the flow itself succeeds. */
+  onFailure?: FailureSink;
+}
 
 /** items extended with a flag noting cross-branch price disagreement. */
 interface AggregatedItem extends ParsedItem {
@@ -82,6 +98,62 @@ async function setSyncState(
     { $set: { ...patch, updatedAt: new Date() } },
     { upsert: true },
   );
+}
+
+/** Advances one branch's delta cursor without touching the others' — delta
+ *  branches run concurrently, so a whole-map write could lose a sibling's
+ *  progress. */
+async function setDeltaCursor(chainId: string, storeId: string, ts: string): Promise<void> {
+  await (await syncState()).updateOne(
+    { _id: chainId },
+    { $set: { [`lastDeltaTimestamps.${storeId}`]: ts, updatedAt: new Date() } as any },
+    { upsert: true },
+  );
+}
+
+/**
+ * The persisted delta cursors, minus any that fileTimestamp() can't have
+ * produced. Before the timestamp parser was fixed, every cursor was the first
+ * 12 digits of the chain id (e.g. "729005814088"), which sorts after every real
+ * timestamp — kept as-is it would make every delta file look already applied.
+ */
+export function validDeltaCursors(cursors: Record<string, string> | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [storeId, ts] of Object.entries(cursors ?? {})) {
+    if (storeId && isFileTimestamp(ts)) out[storeId] = ts;
+  }
+  return out;
+}
+
+/**
+ * Decides which delta files to apply: per branch, every file newer than that
+ * branch's cursor, oldest first. A branch with no cursor yet (new branch, or
+ * one whose cursor was discarded by validDeltaCursors) gets only its newest
+ * file — replaying days of backlog could not finish inside one run, and the
+ * next full sync sets a proper cursor for it anyway. Files without a store id
+ * are returned separately so the caller can report them.
+ */
+export function planDeltaFiles(
+  files: string[],
+  cursors: Record<string, string>,
+): { byStore: Map<string, string[]>; unrecognized: string[] } {
+  const byStore = new Map<string, string[]>();
+  const unrecognized: string[] = [];
+  for (const f of files) {
+    const storeId = storeIdFromFileName(f);
+    if (!storeId) {
+      unrecognized.push(f);
+      continue;
+    }
+    if (fileTimestamp(f) > (cursors[storeId] ?? '')) {
+      byStore.set(storeId, [...(byStore.get(storeId) ?? []), f]);
+    }
+  }
+  for (const [storeId, group] of byStore) {
+    group.sort((a, b) => fileTimestamp(a).localeCompare(fileTimestamp(b)));
+    if (!cursors[storeId]) byStore.set(storeId, group.slice(-1));
+  }
+  return { byStore, unrecognized };
 }
 
 // ─── Firestore-equivalent upsert into Mongo ──────────────────────────────────
@@ -255,24 +327,26 @@ async function writeChainPricesIfCheaper(chain: ChainConfig, items: ParsedItem[]
 
 export async function syncChainFull(
   chain: ChainConfig,
-  opts: { skipUnchangedCheck?: boolean } = {},
+  opts: { skipUnchangedCheck?: boolean } & SyncRunOptions = {},
 ): Promise<unknown> {
-  const cookie = await cerberusLogin(chain.username);
-  const files = await cerberusListFiles(cookie, 'PriceFull');
+  const cookie = await withStage('login', () => cerberusLogin(chain.username));
+  const files = await withStage('list-files', () => cerberusListFiles(cookie, 'PriceFull'));
   const perStore = latestFilePerStore(files, chain.storeId);
   if (!perStore.length) return { chain: chain.id, note: 'no PriceFull file found' };
 
-  const state = await getSyncState(chain.id);
+  const state = await withStage('sync-state', () => getSyncState(chain.id));
 
   // HEAD every selected branch file — cheap relative to downloading them —
   // and build one signature for the whole chain. Skip the (potentially
   // tens-of-MB, times ~dozens of branches) download entirely when nothing has
   // changed since the last successful run. Callers can force a re-download
   // (e.g. to backfill after a parsing bug fix) via opts.skipUnchangedCheck.
-  const metas = await mapWithConcurrency(perStore, FULL_SYNC_CONCURRENCY, async ({ storeId, file }) => {
-    const meta = await headFileMeta(cookie, file);
-    return { storeId, file, size: meta?.size ?? '', modified: meta?.modified ?? '' };
-  });
+  const metas = await withStage('head-check', () =>
+    mapWithConcurrency(perStore, FULL_SYNC_CONCURRENCY, async ({ storeId, file }) => {
+      const meta = await headFileMeta(cookie, file);
+      return { storeId, file, size: meta?.size ?? '', modified: meta?.modified ?? '' };
+    }),
+  );
   const signature = metas
     .slice()
     .sort((a, b) => a.storeId.localeCompare(b.storeId))
@@ -291,16 +365,21 @@ export async function syncChainFull(
   const failedStores = new Set<string>();
   await mapWithConcurrency(perStore, FULL_SYNC_CONCURRENCY, async ({ storeId, file }) => {
     try {
-      const xml = await downloadFile(cookie, file);
-      const items = parsePriceItemsXml(xml, MAX_ITEMS_PER_CHAIN);
+      const xml = await withStage('download', () => downloadFile(cookie, file));
+      const items = await withStage('parse', () => parsePriceItemsXml(xml, MAX_ITEMS_PER_CHAIN));
+      // Every real branch carries thousands of items; none means the format
+      // wasn't understood, which must surface instead of silently dropping
+      // the branch's prices (same rule as the v2 sync).
+      if (!items.length) throw tagStage(new Error(`${file} parsed to zero items`), 'parse');
       for (const item of items) foldItemIntoMerge(merge, item);
     } catch (err) {
       failedStores.add(storeId);
       console.error(`syncChainFull: ${chain.id} branch ${storeId} (${file}) failed: ${err}`);
+      opts.onFailure?.({ level: 'file', error: err, chain: chain.id, storeId, file });
     }
   });
   const items = mergeEntriesToItems(merge);
-  await writeChainPrices(chain, items);
+  await withStage('write-db', () => writeChainPrices(chain, items));
 
   // A fresh full snapshot supersedes older delta files for the branches it
   // covered, so fast-forward each of those branches' delta cursor to at least
@@ -308,11 +387,11 @@ export async function syncChainFull(
   // chain.storeId override, or that failed to download above, keep whatever
   // cursor they already had — deltas keep covering them until a full sync
   // actually lands their data).
-  const lastDeltaTimestamps = { ...(state?.lastDeltaTimestamps ?? {}) };
+  const lastDeltaTimestamps = validDeltaCursors(state?.lastDeltaTimestamps);
   for (const { storeId, file } of perStore) {
-    if (failedStores.has(storeId)) continue;
+    if (failedStores.has(storeId) || !storeId) continue;
     const ts = fileTimestamp(file);
-    if (!lastDeltaTimestamps[storeId] || ts > lastDeltaTimestamps[storeId]) {
+    if (isFileTimestamp(ts) && (!lastDeltaTimestamps[storeId] || ts > lastDeltaTimestamps[storeId])) {
       lastDeltaTimestamps[storeId] = ts;
     }
   }
@@ -321,10 +400,12 @@ export async function syncChainFull(
   // baseline when every branch actually downloaded — otherwise a future
   // HEAD-check could see unchanged metadata for the branches that failed here
   // and skip retrying them indefinitely.
-  await setSyncState(chain.id, {
-    ...(failedStores.size === 0 ? { lastFullSignature: signature } : {}),
-    lastDeltaTimestamps,
-  });
+  await withStage('sync-state', () =>
+    setSyncState(chain.id, {
+      ...(failedStores.size === 0 ? { lastFullSignature: signature } : {}),
+      lastDeltaTimestamps,
+    }),
+  );
 
   return {
     chain: chain.id,
@@ -344,56 +425,77 @@ export async function syncChainFull(
 // raising its price, since it never sees the other branches. That's a known
 // gap, corrected by the next full sync (see README "Branches").
 
-export async function syncChainDeltas(chain: ChainConfig): Promise<unknown> {
-  const cookie = await cerberusLogin(chain.username);
+export async function syncChainDeltas(chain: ChainConfig, opts: SyncRunOptions = {}): Promise<unknown> {
+  const cookie = await withStage('login', () => cerberusLogin(chain.username));
 
   // The portal's search matches substrings, so "Price" also returns
   // "PriceFull" entries — excluded here (handled by the full sync).
-  const allFiles = await cerberusListFiles(cookie, 'Price');
-  const deltaFiles = filterByStore(
-    allFiles.filter((f) => !/pricefull/i.test(f)),
-    chain.storeId,
+  const allFiles = await withStage('list-files', () => cerberusListFiles(cookie, 'Price'));
+  const deltaFiles = dropStaleFiles(
+    filterByStore(
+      allFiles.filter((f) => !/pricefull/i.test(f)),
+      chain.storeId,
+    ),
   );
 
-  const state = await getSyncState(chain.id);
-  const lastByStore = state?.lastDeltaTimestamps ?? {};
+  const state = await withStage('sync-state', () => getSyncState(chain.id));
+  const { byStore: newByStore, unrecognized } = planDeltaFiles(
+    deltaFiles,
+    validDeltaCursors(state?.lastDeltaTimestamps),
+  );
 
-  // Group files newer than that branch's cursor, per branch.
-  const newByStore = new Map<string, string[]>();
-  for (const f of deltaFiles) {
-    const storeId = storeIdFromFileName(f) ?? '';
-    if (fileTimestamp(f) > (lastByStore[storeId] ?? '')) {
-      newByStore.set(storeId, [...(newByStore.get(storeId) ?? []), f]);
-    }
+  for (const file of unrecognized) {
+    console.error(`syncChainDeltas: ${chain.id} skipped ${file}: no store id in file name`);
+    opts.onFailure?.({
+      level: 'file',
+      stage: 'list-files',
+      error: new Error(`unrecognised delta file name (no store id): ${file}`),
+      chain: chain.id,
+      file,
+    });
   }
 
   if (!newByStore.size) {
     return { chain: chain.id, branchesChanged: 0, filesProcessed: 0, reason: 'no new delta files' };
   }
 
-  const lastDeltaTimestamps = { ...lastByStore };
   let filesProcessed = 0;
   let itemsTotal = 0;
+  const failedStores: string[] = [];
 
-  for (const [storeId, files] of newByStore) {
-    // Oldest first: earlier files may cover different items than later ones,
-    // so every new file for the branch gets applied, not just the latest.
-    const ordered = [...files].sort((a, b) => fileTimestamp(a).localeCompare(fileTimestamp(b)));
+  // One bad file (e.g. a body that isn't the archive its name says) must not
+  // sink every other branch — same isolation as the full sync. A branch stops
+  // at its first failed file without advancing its cursor: later deltas can't
+  // be applied over the gap, the next run retries from that file, and the
+  // nightly full sync fast-forwards the cursor past a permanently bad one.
+  await mapWithConcurrency([...newByStore], DELTA_SYNC_CONCURRENCY, async ([storeId, ordered]) => {
     for (const file of ordered) {
-      const xml = await downloadFile(cookie, file);
-      const items = parsePriceItemsXml(xml, MAX_ITEMS_PER_CHAIN);
-      await writeChainPricesIfCheaper(chain, items);
-      itemsTotal += items.length;
-      filesProcessed++;
+      try {
+        const xml = await withStage('download', () => downloadFile(cookie, file));
+        const items = await withStage('parse', () => parsePriceItemsXml(xml, MAX_ITEMS_PER_CHAIN));
+        await withStage('write-db', () => writeChainPricesIfCheaper(chain, items));
+        itemsTotal += items.length;
+        filesProcessed++;
 
-      // Persisted after each file so a mid-batch crash resumes from the last
-      // applied delta for that branch instead of redoing it.
-      lastDeltaTimestamps[storeId] = fileTimestamp(file);
-      await setSyncState(chain.id, { lastDeltaTimestamps });
+        // Persisted after each file so a mid-batch crash resumes from the last
+        // applied delta for that branch instead of redoing it.
+        await withStage('sync-state', () => setDeltaCursor(chain.id, storeId, fileTimestamp(file)));
+      } catch (err) {
+        failedStores.push(storeId);
+        console.error(`syncChainDeltas: ${chain.id} branch ${storeId} (${file}) failed: ${err}`);
+        opts.onFailure?.({ level: 'file', error: err, chain: chain.id, storeId, file });
+        return;
+      }
     }
-  }
+  });
 
-  return { chain: chain.id, branchesChanged: newByStore.size, filesProcessed, items: itemsTotal };
+  return {
+    chain: chain.id,
+    branchesChanged: newByStore.size,
+    filesProcessed,
+    items: itemsTotal,
+    storesFailed: failedStores.length ? failedStores : undefined,
+  };
 }
 
 // ─── Stores (branches) sync ────────────────────────────────────────────────────
@@ -430,14 +532,14 @@ async function writeChainStores(chain: ChainConfig, list: ParsedStore[]): Promis
 /** Refreshes the `stores` collection from the chain's daily Stores file — one
  *  small file listing every branch, unlike the per-branch PriceFull fan-out. */
 export async function syncChainStores(chain: ChainConfig): Promise<unknown> {
-  const cookie = await cerberusLogin(chain.username);
-  const files = await cerberusListFiles(cookie, 'Stores');
+  const cookie = await withStage('login', () => cerberusLogin(chain.username));
+  const files = await withStage('list-files', () => cerberusListFiles(cookie, 'Stores'));
   const file = pickLatestFile(files);
   if (!file) return { chain: chain.id, note: 'no Stores file found' };
 
-  const xml = await downloadFile(cookie, file);
-  const list = parseStoresXml(xml);
-  await writeChainStores(chain, list);
+  const xml = await withStage('download', () => downloadFile(cookie, file));
+  const list = await withStage('parse', () => parseStoresXml(xml));
+  await withStage('write-db', () => writeChainStores(chain, list));
 
   return { chain: chain.id, file, stores: list.length };
 }

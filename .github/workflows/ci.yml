@@ -18,3 +18,4 @@ jobs:
       # `build` is `tsc --noEmit` — the platform compiles the functions itself,
       # so this is purely a type gate.
       - run: npm run build
+      - run: npm test
