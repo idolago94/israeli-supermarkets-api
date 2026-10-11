@@ -20,6 +20,10 @@ name: catalog sync
 #   CATALOG_API_BASE   e.g. https://israeli-supermarkets-api.vercel.app  (no trailing slash)
 #   SYNC_SECRET        the same value set as SYNC_SECRET on the deployment
 #
+# Failures are reported as GitHub issues (label `sync-failure`) by the last
+# steps of each job — see scripts/report-sync-failures.ts. That uses this run's
+# own GITHUB_TOKEN (hence `issues: write` below); no extra secret is needed.
+#
 # Note: GitHub disables scheduled workflows in a repository that has seen no
 # activity for 60 days. Re-enable from the Actions tab if that ever happens.
 
@@ -54,6 +58,11 @@ concurrency:
   group: catalog-sync
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  # Lets the reporting step open/comment on `sync-failure` issues.
+  issues: write
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -67,6 +76,7 @@ jobs:
         chain: [osher_ad, rami_levy, yohananof, tiv_taam]
     steps:
       - name: Sync ${{ matrix.chain }}
+        id: sync
         if: >-
           ${{ github.event_name != 'workflow_dispatch'
               || inputs.chain == 'all'
@@ -96,32 +106,88 @@ jobs:
           fi
           echo "POST /api/sync/${MODE}?chain=${CHAIN}"
 
+          # Every attempt's response is kept in sync-attempts/ for the
+          # reporting step. needs_report flips to true when an attempt fails or
+          # a response lists failures (e.g. branch files skipped on an HTTP 200).
+          mkdir -p sync-attempts
+          echo "mode=${MODE}" >> "$GITHUB_OUTPUT"
+          echo "needs_report=false" >> "$GITHUB_OUTPUT"
+          mark_report() { echo "needs_report=true" >> "$GITHUB_OUTPUT"; }
+
           # The sync endpoint runs to completion before responding, so the read
           # timeout is generous. Retry only transient failures (network drop,
           # 5xx); a 4xx means bad config and retrying cannot help.
           for attempt in 1 2 3; do
+            body="sync-attempts/attempt-${attempt}.json"
+            started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
             status=$(curl -sS -X POST \
               --max-time 600 \
               -H "x-sync-secret: ${SYNC_SECRET}" \
-              -o response.json -w '%{http_code}' \
+              -H "x-sync-issue-reporting: caller" \
+              -D sync-attempts/headers.txt \
+              -o "${body}" -w '%{http_code}' \
               "${url}") && curl_rc=0 || curl_rc=$?
+            vercel_id=$(grep -i '^x-vercel-id:' sync-attempts/headers.txt 2>/dev/null | tail -1 | cut -d' ' -f2 | tr -d '\r')
+            printf 'curl_rc=%s\nhttp_status=%s\nvercel_id=%s\nstarted_at=%s\n' \
+              "${curl_rc}" "${status:-0}" "${vercel_id}" "${started_at}" > "sync-attempts/attempt-${attempt}.meta"
 
             if [ "${curl_rc}" -eq 0 ] && [ "${status}" -ge 200 ] && [ "${status}" -lt 300 ]; then
               echo "${CHAIN}: ${MODE} sync ok (HTTP ${status})"
-              head -c 2000 response.json; echo
+              head -c 2000 "${body}"; echo
+              if [ "${attempt}" -gt 1 ] || jq -e '(.failures // []) | length > 0' "${body}" > /dev/null 2>&1; then
+                echo "::warning::${CHAIN}: ${MODE} sync reported failures — see the issue reporting step."
+                mark_report
+              fi
               exit 0
             fi
 
+            mark_report
             if [ "${curl_rc}" -eq 0 ] && [ "${status}" -ge 400 ] && [ "${status}" -lt 500 ]; then
               echo "::error::${CHAIN}: ${MODE} sync rejected (HTTP ${status}) — check SYNC_SECRET / CATALOG_API_BASE."
-              head -c 2000 response.json; echo
+              head -c 2000 "${body}"; echo
               exit 1
             fi
 
             echo "attempt ${attempt} failed (curl rc=${curl_rc}, HTTP ${status:-none})"
-            [ -s response.json ] && { head -c 1000 response.json; echo; }
+            [ -s "${body}" ] && { head -c 1000 "${body}"; echo; }
             [ "${attempt}" -lt 3 ] && sleep $((attempt * 30))
           done
 
           echo "::error::${CHAIN}: ${MODE} sync failed after 3 attempts."
           exit 1
+
+      # ── Failure reporting ────────────────────────────────────────────────
+      # Runs only when the step above flagged something to report, and can
+      # never change the job's outcome (continue-on-error): the sync step's
+      # own result stays the job's result even if GitHub is unreachable.
+      - name: Check out reporter
+        if: ${{ always() && steps.sync.outputs.needs_report == 'true' }}
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Set up Node
+        if: ${{ always() && steps.sync.outputs.needs_report == 'true' }}
+        continue-on-error: true
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: repo/package-lock.json
+
+      - name: Report failures as GitHub issues
+        if: ${{ always() && steps.sync.outputs.needs_report == 'true' }}
+        continue-on-error: true
+        working-directory: repo
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MODE: ${{ steps.sync.outputs.mode }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
+          CHAIN: ${{ matrix.chain }}
+          ENDPOINT: /api/sync/${{ steps.sync.outputs.mode }}?chain=${{ matrix.chain }}
+          SCHEDULE: ${{ github.event.schedule }}
+          JOB_NAME: sync (${{ matrix.chain }})
+        run: |
+          npm ci --no-audit --no-fund
+          npx ts-node --transpile-only scripts/report-sync-failures.ts "${GITHUB_WORKSPACE}/sync-attempts"

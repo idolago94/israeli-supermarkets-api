@@ -137,7 +137,9 @@ export function parsePriceItemsXml(xml: string, maxItems: number): ParsedItem[] 
   while ((match = itemRe.exec(xml)) !== null && items.length < maxItems) {
     const block = match[1];
     const code = normalizeBarcode(tagValue(block, 'ItemCode'));
-    const name = tagValue(block, 'ItemName');
+    // rami_levy's legacy-format branch files (e.g. store 039's
+    // "pricefull…-039-…" ZIPs) spell it <ItemNm>.
+    const name = tagValue(block, 'ItemName') || tagValue(block, 'ItemNm');
     const price = parseFloat(tagValue(block, 'ItemPrice'));
     if (!code || !name || !isFinite(price) || price <= 0) continue;
 

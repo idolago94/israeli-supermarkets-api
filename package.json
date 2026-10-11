@@ -5,6 +5,7 @@
   "description": "Price-comparison catalog API — MongoDB-backed catalog + Cerberus price-sync, deployed on Vercel and scheduled by GitHub Actions cron.",
   "scripts": {
     "build": "tsc --noEmit",
+    "test": "node --test --require ts-node/register/transpile-only tests/*.test.ts",
     "vercel-dev": "vercel dev"
   },
   "engines": { "node": ">=20" },
@@ -16,6 +17,7 @@
   "devDependencies": {
     "@vercel/node": "^3.2.0",
     "typescript": "^5.5.0",
-    "@types/node": "^20.0.0"
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.1"
   }
 }
