@@ -39,12 +39,23 @@ const FULL_SYNC_CONCURRENCY = 12;
 // small files — too many to fetch one at a time inside the function's limit.
 const DELTA_SYNC_CONCURRENCY = 8;
 
+// No new delta file starts after this much of a run has elapsed. The function
+// is killed at maxDuration (300s, vercel.json) and a single in-flight file can
+// still take over a minute (download timeouts + retries in lib/cerberus.ts),
+// so the budget leaves that headroom. A backlog that doesn't fit is reported
+// as `filesPending` and picked up by the next request — every file's cursor is
+// persisted as it's applied, so nothing is redone.
+const DELTA_SYNC_BUDGET_MS = 200_000;
+
 /** Options shared by the sync entry points. */
 export interface SyncRunOptions {
   /** Receives every failure the flow handles internally (a branch file that
    *  failed while the rest of the chain carried on), so it can be reported
    *  even though the flow itself succeeds. */
   onFailure?: FailureSink;
+  /** Epoch ms after which no new file is started (delta sync only); defaults
+   *  to DELTA_SYNC_BUDGET_MS from the start of the run. */
+  deadline?: number;
 }
 
 /** items extended with a flag noting cross-branch price disagreement. */
@@ -426,6 +437,7 @@ export async function syncChainFull(
 // gap, corrected by the next full sync (see README "Branches").
 
 export async function syncChainDeltas(chain: ChainConfig, opts: SyncRunOptions = {}): Promise<unknown> {
+  const deadline = opts.deadline ?? Date.now() + DELTA_SYNC_BUDGET_MS;
   const cookie = await withStage('login', () => cerberusLogin(chain.username));
 
   // The portal's search matches substrings, so "Price" also returns
@@ -456,10 +468,11 @@ export async function syncChainDeltas(chain: ChainConfig, opts: SyncRunOptions =
   }
 
   if (!newByStore.size) {
-    return { chain: chain.id, branchesChanged: 0, filesProcessed: 0, reason: 'no new delta files' };
+    return { chain: chain.id, branchesChanged: 0, filesProcessed: 0, filesPending: 0, reason: 'no new delta files' };
   }
 
   let filesProcessed = 0;
+  let filesPending = 0;
   let itemsTotal = 0;
   const failedStores: string[] = [];
 
@@ -469,7 +482,14 @@ export async function syncChainDeltas(chain: ChainConfig, opts: SyncRunOptions =
   // be applied over the gap, the next run retries from that file, and the
   // nightly full sync fast-forwards the cursor past a permanently bad one.
   await mapWithConcurrency([...newByStore], DELTA_SYNC_CONCURRENCY, async ([storeId, ordered]) => {
-    for (const file of ordered) {
+    for (const [i, file] of ordered.entries()) {
+      // Out of time: leave the rest of this branch for the next request rather
+      // than letting the platform kill the function mid-run (a 504 with no
+      // response, which a retry of the same request would only repeat).
+      if (Date.now() >= deadline) {
+        filesPending += ordered.length - i;
+        return;
+      }
       try {
         const xml = await withStage('download', () => downloadFile(cookie, file));
         const items = await withStage('parse', () => parsePriceItemsXml(xml, MAX_ITEMS_PER_CHAIN));
@@ -493,6 +513,7 @@ export async function syncChainDeltas(chain: ChainConfig, opts: SyncRunOptions =
     chain: chain.id,
     branchesChanged: newByStore.size,
     filesProcessed,
+    filesPending,
     items: itemsTotal,
     storesFailed: failedStores.length ? failedStores : undefined,
   };
