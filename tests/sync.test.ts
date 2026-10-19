@@ -137,6 +137,52 @@ test('deltas: a bad file fails only its branch, is reported, and keeps that bran
   assert.equal(failures[0].file, bad);
 });
 
+test('deltas: past the deadline no new file starts; the rest is reported as pending', async () => {
+  listing = [
+    'Price7290058140886-001-001-20261011-070000.gz',
+    'Price7290058140886-001-001-20261011-080000.gz',
+    'Price7290058140886-001-002-20261011-080000.gz',
+  ];
+  state = { _id: 'rami_levy', lastDeltaTimestamps: { '001': '20261011060000', '002': '20261011060000' } };
+
+  const result: any = await syncChainDeltas(RAMI, { deadline: Date.now() - 1 });
+
+  assert.deepEqual(downloads, []);
+  assert.deepEqual(cursorWrites, []);
+  assert.equal(result.filesProcessed, 0);
+  assert.equal(result.filesPending, 3);
+});
+
+test('deltas: the deadline stops a branch mid-backlog, keeping its cursor at the last applied file', async () => {
+  listing = [
+    'Price7290058140886-001-001-20261011-070000.gz',
+    'Price7290058140886-001-001-20261011-080000.gz',
+    'Price7290058140886-001-001-20261011-090000.gz',
+  ];
+  state = { _id: 'rami_levy', lastDeltaTimestamps: { '001': '20261011060000' } };
+  // The first download uses up the budget.
+  const realNow = Date.now;
+  let clock = 1_000;
+  Date.now = () => clock;
+  const download = (cerberus as any).downloadFile;
+  (cerberus as any).downloadFile = async (cookie: string, file: string) => {
+    clock = 10_000;
+    return download(cookie, file);
+  };
+
+  let result: any;
+  try {
+    result = await syncChainDeltas(RAMI, { deadline: 5_000 });
+  } finally {
+    Date.now = realNow;
+  }
+
+  assert.deepEqual(downloads, ['Price7290058140886-001-001-20261011-070000.gz']);
+  assert.deepEqual(cursorWrites, [{ 'lastDeltaTimestamps.001': '20261011070000' }]);
+  assert.equal(result.filesProcessed, 1);
+  assert.equal(result.filesPending, 2);
+});
+
 test('deltas: flow-level failures still throw, tagged with their stage', async () => {
   (cerberus as any).cerberusListFiles = async () => {
     throw new Error('file listing failed (502)');

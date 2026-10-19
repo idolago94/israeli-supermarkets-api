@@ -117,8 +117,19 @@ jobs:
           # The sync endpoint runs to completion before responding, so the read
           # timeout is generous. Retry only transient failures (network drop,
           # 5xx); a 4xx means bad config and retrying cannot help.
-          for attempt in 1 2 3; do
-            body="sync-attempts/attempt-${attempt}.json"
+          #
+          # A delta sync stops starting files near the function's time limit
+          # and reports the rest as `result.filesPending`; that's progress, not
+          # a failure, so it's followed by another request (up to max_passes)
+          # with a fresh retry budget. n numbers every request for the report.
+          n=0
+          pass=1
+          max_passes=6
+          attempt=1
+          retried=false
+          while [ "${attempt}" -le 3 ]; do
+            n=$((n + 1))
+            body="sync-attempts/attempt-${n}.json"
             started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
             status=$(curl -sS -X POST \
               --max-time 600 \
@@ -129,15 +140,26 @@ jobs:
               "${url}") && curl_rc=0 || curl_rc=$?
             vercel_id=$(grep -i '^x-vercel-id:' sync-attempts/headers.txt 2>/dev/null | tail -1 | cut -d' ' -f2 | tr -d '\r')
             printf 'curl_rc=%s\nhttp_status=%s\nvercel_id=%s\nstarted_at=%s\n' \
-              "${curl_rc}" "${status:-0}" "${vercel_id}" "${started_at}" > "sync-attempts/attempt-${attempt}.meta"
+              "${curl_rc}" "${status:-0}" "${vercel_id}" "${started_at}" > "sync-attempts/attempt-${n}.meta"
 
             if [ "${curl_rc}" -eq 0 ] && [ "${status}" -ge 200 ] && [ "${status}" -lt 300 ]; then
               echo "${CHAIN}: ${MODE} sync ok (HTTP ${status})"
               head -c 2000 "${body}"; echo
-              if [ "${attempt}" -gt 1 ] || jq -e '(.failures // []) | length > 0' "${body}" > /dev/null 2>&1; then
+              if jq -e '(.failures // []) | length > 0' "${body}" > /dev/null 2>&1; then
                 echo "::warning::${CHAIN}: ${MODE} sync reported failures — see the issue reporting step."
                 mark_report
               fi
+              pending=$(jq -r '.result.filesPending // 0' "${body}" 2>/dev/null || echo 0)
+              if [ "${pending}" -gt 0 ] 2>/dev/null; then
+                if [ "${pass}" -lt "${max_passes}" ]; then
+                  echo "${CHAIN}: ${pending} ${MODE} file(s) left after pass ${pass} — continuing."
+                  pass=$((pass + 1))
+                  attempt=1
+                  continue
+                fi
+                echo "::warning::${CHAIN}: ${pending} ${MODE} file(s) still pending after ${max_passes} passes — the next run picks them up."
+              fi
+              [ "${retried}" = true ] && { echo "::warning::${CHAIN}: ${MODE} sync needed retries — see the issue reporting step."; mark_report; }
               exit 0
             fi
 
@@ -150,7 +172,9 @@ jobs:
 
             echo "attempt ${attempt} failed (curl rc=${curl_rc}, HTTP ${status:-none})"
             [ -s "${body}" ] && { head -c 1000 "${body}"; echo; }
+            retried=true
             [ "${attempt}" -lt 3 ] && sleep $((attempt * 30))
+            attempt=$((attempt + 1))
           done
 
           echo "::error::${CHAIN}: ${MODE} sync failed after 3 attempts."
