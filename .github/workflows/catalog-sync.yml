@@ -28,14 +28,16 @@ name: catalog sync
 # activity for 60 days. Re-enable from the Actions tab if that ever happens.
 
 on:
-  schedule:
-    # Branch directory sync — 02:30 Asia/Jerusalem (winter), ahead of the full
-    # sync. One small file per chain, so it doesn't need its own time slot.
-    - cron: '30 0 * * *'
-    # Nightly full sync — 03:00 Asia/Jerusalem (winter).
-    - cron: '0 1 * * *'
-    # Intraday delta syncs — 07:00 / 11:00 / 15:00 / 19:00 Asia/Jerusalem.
-    - cron: '0 5,9,13,17 * * *'
+  # Schedule paused for now — the sync runs only when triggered manually from
+  # the Actions tab. Uncomment this block to bring the cron runs back.
+  # schedule:
+  #   # Branch directory sync — 02:30 Asia/Jerusalem (winter), ahead of the full
+  #   # sync. One small file per chain, so it doesn't need its own time slot.
+  #   - cron: '30 0 * * *'
+  #   # Nightly full sync — 03:00 Asia/Jerusalem (winter).
+  #   - cron: '0 1 * * *'
+  #   # Intraday delta syncs — 07:00 / 11:00 / 15:00 / 19:00 Asia/Jerusalem.
+  #   - cron: '0 5,9,13,17 * * *'
   workflow_dispatch:
     inputs:
       mode:
