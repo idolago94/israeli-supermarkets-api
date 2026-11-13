@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent for the catalog sync service (macOS). Don't edit the
+  __PLACEHOLDERS__ by hand: deploy/install-macos.sh fills them in and loads it.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.catalog.sync-service</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE__</string>
+    <string>-r</string>
+    <string>ts-node/register/transpile-only</string>
+    <string>src/main.ts</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__SERVICE_DIR__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__PATH__</string>
+  </dict>
+  <!-- Start at login and restart whenever it exits. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>__SERVICE_DIR__/data/service.log</string>
+  <key>StandardErrorPath</key>
+  <string>__SERVICE_DIR__/data/service.log</string>
+</dict>
+</plist>

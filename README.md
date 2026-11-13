@@ -39,6 +39,15 @@ MongoDB), the read API, a small admin screen for editing product departments,
 and its own cron. Push notifications and the rest of the app's backend stay in
 Firebase, in the app repo.
 
+## Local sync service
+
+[`sync-service/`](sync-service/README.md) is the long-running replacement for
+the Vercel sync endpoints. It runs on an always-on machine, syncs every branch
+of every chain into catalog v2 on a schedule (hourly deltas, plus a nightly
+branch list and full sync), and keeps the full history of every run, step and
+log line in SQLite, with a local dashboard. It has its own `package.json` and
+is excluded from the Vercel deployment by `.vercelignore`.
+
 ## Endpoints
 
 | Route | Auth | Purpose |

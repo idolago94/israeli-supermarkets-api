@@ -1,4 +1,4 @@
-import { fileTimestamp, filterByStore, storeIdFromFileName } from './cerberus';
+import { fileTimestamp, filterByStore, isFileTimestamp, storeIdFromFileName } from './cerberus';
 
 // ─── Per-branch file selection ─────────────────────────────────────────────────
 //
@@ -70,4 +70,51 @@ export function latestFilePerStore(
     storeId: id,
     file: [...group].sort((a, b) => fileTimestamp(b).localeCompare(fileTimestamp(a)))[0],
   }));
+}
+
+// ─── Delta planning ───────────────────────────────────────────────────────────
+
+/**
+ * The persisted delta cursors, minus any that fileTimestamp() can't have
+ * produced. Before the timestamp parser was fixed, every cursor was the first
+ * 12 digits of the chain id (e.g. "729005814088"), which sorts after every real
+ * timestamp — kept as-is it would make every delta file look already applied.
+ */
+export function validDeltaCursors(cursors: Record<string, string> | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [storeId, ts] of Object.entries(cursors ?? {})) {
+    if (storeId && isFileTimestamp(ts)) out[storeId] = ts;
+  }
+  return out;
+}
+
+/**
+ * Decides which delta files to apply: per branch, every file newer than that
+ * branch's cursor, oldest first. A branch with no cursor yet (new branch, or
+ * one whose cursor was discarded by validDeltaCursors) gets only its newest
+ * file — replaying days of backlog could not finish inside one run, and the
+ * next full sync sets a proper cursor for it anyway. Files without a store id
+ * are returned separately so the caller can report them.
+ */
+export function planDeltaFiles(
+  files: string[],
+  cursors: Record<string, string>,
+): { byStore: Map<string, string[]>; unrecognized: string[] } {
+  const byStore = new Map<string, string[]>();
+  const unrecognized: string[] = [];
+  for (const f of files) {
+    const storeId = storeIdFromFileName(f);
+    if (!storeId) {
+      unrecognized.push(f);
+      continue;
+    }
+    if (fileTimestamp(f) > (cursors[storeId] ?? '')) {
+      byStore.set(storeId, [...(byStore.get(storeId) ?? []), f]);
+    }
+  }
+  for (const [storeId, group] of byStore) {
+    group.sort((a, b) => fileTimestamp(a).localeCompare(fileTimestamp(b)));
+    if (!cursors[storeId]) byStore.set(storeId, group.slice(-1));
+  }
+  return { byStore, unrecognized };
 }
