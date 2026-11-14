@@ -1,0 +1,19 @@
+# systemd user unit for the catalog sync service (Linux). deploy/install-linux.sh
+# fills in the __PLACEHOLDERS__ and enables it.
+[Unit]
+Description=Catalog sync service (Cerberus -> catalog v2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__SERVICE_DIR__
+ExecStart=__NODE__ -r ts-node/register/transpile-only src/main.ts
+Restart=always
+RestartSec=10
+# Lets a run in progress close its connections; unfinished work resumes on start.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

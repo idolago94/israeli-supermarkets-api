@@ -36,14 +36,52 @@ const cerberusDispatcher = new Agent({
 
 const CERBERUS_FETCH_RETRIES = 2;
 
-async function cerberusFetch(url: string, init: Record<string, unknown> = {}): Promise<Response> {
+/** Optional per-call settings. `signal` aborts the request (and any pending
+ *  internal retry) — the local sync service uses it for per-step timeouts. */
+export interface CerberusCallOptions {
+  signal?: AbortSignal;
+}
+
+/** A non-2xx response from the portal. `status` lets callers tell a
+ *  transient 5xx/429 from a permanent 4xx. */
+export class CerberusHttpError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'CerberusHttpError';
+  }
+}
+
+/** The portal bounced a request back to its login page: the session cookie
+ *  expired (or was never accepted). Logging in again and retrying fixes it. */
+export class CerberusSessionExpiredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CerberusSessionExpiredError';
+  }
+}
+
+async function cerberusFetch(
+  url: string,
+  init: Record<string, unknown> = {},
+  signal?: AbortSignal,
+): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
+    signal?.throwIfAborted();
     try {
-      return await fetch(url, { ...init, dispatcher: cerberusDispatcher } as any);
+      return await fetch(url, { ...init, ...(signal ? { signal } : {}), dispatcher: cerberusDispatcher } as any);
     } catch (err) {
-      if (attempt >= CERBERUS_FETCH_RETRIES) throw err;
+      if (signal?.aborted || attempt >= CERBERUS_FETCH_RETRIES) throw err;
       await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
     }
+  }
+}
+
+/** True when a (redirect-followed) response landed on the login page. */
+function isLoginRedirect(res: Response): boolean {
+  try {
+    return /^\/login(\/|$)/.test(new URL(res.url).pathname);
+  } catch {
+    return false;
   }
 }
 
@@ -75,8 +113,8 @@ function extractCsrf(html: string): string {
   return input ? input[1] : '';
 }
 
-export async function cerberusLogin(username: string): Promise<string> {
-  const page = await cerberusFetch(`${CERBERUS_BASE}/login`);
+export async function cerberusLogin(username: string, opts: CerberusCallOptions = {}): Promise<string> {
+  const page = await cerberusFetch(`${CERBERUS_BASE}/login`, {}, opts.signal);
   const cookie = cookiesFrom(page);
   const csrf = extractCsrf(await page.text());
 
@@ -94,13 +132,18 @@ export async function cerberusLogin(username: string): Promise<string> {
       Submit: 'Sign in',
       ...(csrf ? { csrftoken: csrf } : {}),
     }).toString(),
-  });
+  }, opts.signal);
   return cookiesFrom(res, cookie);
 }
 
 /** Lists files whose name contains `search` (case-insensitive substring match server-side). */
-export async function cerberusListFiles(cookie: string, search: string): Promise<string[]> {
-  const filePage = await cerberusFetch(`${CERBERUS_BASE}/file`, { headers: { cookie } });
+export async function cerberusListFiles(
+  cookie: string,
+  search: string,
+  opts: CerberusCallOptions = {},
+): Promise<string[]> {
+  const filePage = await cerberusFetch(`${CERBERUS_BASE}/file`, { headers: { cookie } }, opts.signal);
+  if (isLoginRedirect(filePage)) throw new CerberusSessionExpiredError('file listing redirected to the login page');
   const csrf = extractCsrf(await filePage.text());
 
   const res = await cerberusFetch(`${CERBERUS_BASE}/file/json/dir`, {
@@ -118,8 +161,9 @@ export async function cerberusListFiles(cookie: string, search: string): Promise
       cd: '/',
       ...(csrf ? { csrftoken: csrf } : {}),
     }).toString(),
-  });
-  if (!res.ok) throw new Error(`file listing failed (${res.status})`);
+  }, opts.signal);
+  if (isLoginRedirect(res)) throw new CerberusSessionExpiredError('file listing redirected to the login page');
+  if (!res.ok) throw new CerberusHttpError(`file listing failed (${res.status})`, res.status);
   const json = (await res.json()) as any;
   const rows: any[] = json?.aaData ?? [];
   return rows.map((r) => (typeof r === 'string' ? r : r?.fname ?? r?.name ?? ''));
@@ -180,20 +224,32 @@ function downloadUrl(fname: string): string {
 /**
  * Cheap change-detection: a HEAD request returns Content-Length and
  * Last-Modified without transferring the file body, letting the full sync skip
- * the download (and the parse) when a chain hasn't republished. Returns null if
- * the server doesn't support HEAD here — callers then download unconditionally.
+ * the download (and the parse) when a chain hasn't republished. Throws on a
+ * network error, an HTTP error or an expired session — see headFileMeta for
+ * the forgiving variant.
  */
+export async function cerberusHead(
+  cookie: string,
+  fname: string,
+  opts: CerberusCallOptions = {},
+): Promise<{ size: string; modified: string }> {
+  const res = await cerberusFetch(downloadUrl(fname), { method: 'HEAD', headers: { cookie } }, opts.signal);
+  if (isLoginRedirect(res)) throw new CerberusSessionExpiredError(`HEAD ${fname} redirected to the login page`);
+  if (!res.ok) throw new CerberusHttpError(`HEAD failed (${res.status}) for ${fname}`, res.status);
+  return {
+    size: res.headers.get('content-length') ?? '',
+    modified: res.headers.get('last-modified') ?? '',
+  };
+}
+
+/** cerberusHead, but returns null on any failure (the server doesn't support
+ *  HEAD here, a network blip) — callers then download unconditionally. */
 export async function headFileMeta(
   cookie: string,
   fname: string,
 ): Promise<{ size: string; modified: string } | null> {
   try {
-    const res = await cerberusFetch(downloadUrl(fname), { method: 'HEAD', headers: { cookie } });
-    if (!res.ok) return null;
-    return {
-      size: res.headers.get('content-length') ?? '',
-      modified: res.headers.get('last-modified') ?? '',
-    };
+    return await cerberusHead(cookie, fname);
   } catch {
     return null;
   }
@@ -204,7 +260,7 @@ export async function headFileMeta(
  * but the Stores file is published UTF-16LE (with BOM) by every chain seen so
  * far \u2014 sniff the BOM instead of hardcoding one encoding per file type.
  */
-function decodeXmlBuffer(buf: Buffer): string {
+export function decodeXmlBuffer(buf: Buffer): string {
   if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
     return buf.subarray(2).toString('utf16le');
   }
@@ -289,14 +345,27 @@ export function decompressFileBody(buf: Buffer, fname: string): Buffer {
   }
 }
 
-export async function downloadFile(cookie: string, fname: string): Promise<string> {
-  let buf: Buffer;
+/**
+ * Downloads a file's raw body exactly as served (still compressed) — the local
+ * sync service keeps this on disk so a failure can be replayed from the same
+ * bytes. Tagged 'download' on failure.
+ */
+export async function downloadFileRaw(
+  cookie: string,
+  fname: string,
+  opts: CerberusCallOptions = {},
+): Promise<Buffer> {
   try {
-    const res = await cerberusFetch(downloadUrl(fname), { headers: { cookie } });
-    if (!res.ok) throw new Error(`download failed (${res.status}) for ${fname}`);
-    buf = Buffer.from(await res.arrayBuffer());
+    const res = await cerberusFetch(downloadUrl(fname), { headers: { cookie } }, opts.signal);
+    if (isLoginRedirect(res)) throw new CerberusSessionExpiredError(`download of ${fname} redirected to the login page`);
+    if (!res.ok) throw new CerberusHttpError(`download failed (${res.status}) for ${fname}`, res.status);
+    return Buffer.from(await res.arrayBuffer());
   } catch (err) {
     throw tagStage(err, 'download');
   }
+}
+
+export async function downloadFile(cookie: string, fname: string): Promise<string> {
+  const buf = await downloadFileRaw(cookie, fname);
   return decodeXmlBuffer(decompressFileBody(buf, fname));
 }

@@ -1,0 +1,28 @@
+{
+  "name": "catalog-sync-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local, always-on catalog sync service (Cerberus -> catalog v2 Postgres) with a dashboard and a full SQLite run history. Runs on a machine you own, not on Vercel.",
+  "scripts": {
+    "start": "node -r ts-node/register/transpile-only src/main.ts",
+    "build": "tsc --noEmit -p .",
+    "test": "node --test --test-concurrency=1 --require ts-node/register/transpile-only tests/*.test.ts",
+    "demo": "node -r ts-node/register/transpile-only tests/demo.ts",
+    "doctor": "node -r ts-node/register/transpile-only src/doctor.ts",
+    "migrate": "node -r ts-node/register/transpile-only src/migrateTarget.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "croner": "^9.0.0",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.5.0",
+    "postgres": "^3.4.4"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^20.0.0"
+  }
+}

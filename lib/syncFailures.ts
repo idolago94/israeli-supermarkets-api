@@ -16,12 +16,16 @@ import { createHash } from 'crypto';
 /** The step within a flow that failed. */
 export type SyncStage =
   | 'login'
+  | 'stores-file'
   | 'list-files'
   | 'head-check'
   | 'download'
   | 'decompress'
   | 'parse'
+  | 'validate'
   | 'write-db'
+  | 'finalize'
+  | 'recompute-names'
   | 'sync-state'
   | 'request'
   | 'unknown';
