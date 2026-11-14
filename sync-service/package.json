@@ -7,7 +7,9 @@
     "start": "node -r ts-node/register/transpile-only src/main.ts",
     "build": "tsc --noEmit -p .",
     "test": "node --test --test-concurrency=1 --require ts-node/register/transpile-only tests/*.test.ts",
-    "demo": "node -r ts-node/register/transpile-only tests/demo.ts"
+    "demo": "node -r ts-node/register/transpile-only tests/demo.ts",
+    "doctor": "node -r ts-node/register/transpile-only src/doctor.ts",
+    "migrate": "node -r ts-node/register/transpile-only src/migrateTarget.ts"
   },
   "engines": {
     "node": ">=20"

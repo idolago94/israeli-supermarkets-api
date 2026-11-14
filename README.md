@@ -47,6 +47,7 @@ of every chain into catalog v2 on a schedule (hourly deltas, plus a nightly
 branch list and full sync), and keeps the full history of every run, step and
 log line in SQLite, with a local dashboard. It has its own `package.json` and
 is excluded from the Vercel deployment by `.vercelignore`.
+To install it on a machine, follow [`sync-service/SETUP.md`](sync-service/SETUP.md).
 
 ## Endpoints
 

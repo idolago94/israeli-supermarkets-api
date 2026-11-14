@@ -12,6 +12,10 @@ folder).
 
 ## Run it
 
+**Setting it up on a new machine:** follow [SETUP.md](SETUP.md). It goes step
+by step, with a check after each step. `npm run doctor` verifies the whole
+setup and prints a fix for anything missing. The short version:
+
 ```bash
 npm ci                      # in the repo root: lib/ needs postgres and undici
 cd sync-service && npm ci
@@ -19,8 +23,9 @@ cp .env.example .env        # set SYNC_DATABASE_URL at least
 npm start                   # dashboard at http://localhost:4100
 ```
 
-Apply `supabase/migrations/20261113000000_stores_delta_cursor.sql` to the
-target database first. It adds the per-branch delta cursor.
+Before the first run, run `npm run migrate`. It applies the catalog v2
+migrations to `SYNC_DATABASE_URL`, including the per-branch delta cursor the
+service needs.
 
 To keep it running across reboots and crashes:
 
